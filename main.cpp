@@ -224,7 +224,7 @@ struct simd_prims<int8_t, 32>
 //using simd_t = simd_prims<int8_t, 16>;
 using simd_t = simd_prims<int8_t, 32>;
 
-void pack_chars(simd_t::input_t const& targets, int j, simd_t::simd_base_t &out_chars, simd_t::simd_base_t &out_upper_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask)
+void pack_chars(simd_t::input_t const& targets, int j, simd_t::simd_base_t &out_chars_lower, simd_t::simd_base_t &out_orig_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask)
 {
     for(int i = 0, n = targets.size(); i < n; ++i)
     {
@@ -235,9 +235,8 @@ void pack_chars(simd_t::input_t const& targets, int j, simd_t::simd_base_t &out_
         if (j < t.length())
         {
             char c = t[j];
-            if (std::isupper(c))
-                simd_t::set_idx(i, simd_t::kMaskVal, out_upper_case);
-            simd_t::set_idx(i, std::tolower(c), out_chars);
+            simd_t::set_idx(i, c, out_orig_case);
+            simd_t::set_idx(i, std::tolower(c), out_chars_lower);
         }
         else
         {
@@ -269,7 +268,7 @@ simd_t::scores_t sw_score_simd(std::string_view const&query, simd_t::input_t con
     const vec zero = simd_t::set1(0);
     const vec mismatch_penalty = simd_t::set1(k_mismatch_penalty);
     const vec icase_match_bonus = simd_t::set1(k_icase_match_bonus);
-    const vec case_match_add_bonus = simd_t::set1(k_case_match_add_bonus);
+    const vec case_match_add_bonus = simd_t::set1(k_case_match_add_bonus + k_icase_match_bonus);
     const vec extend_gap_penalty_v = simd_t::set1(k_extend_gap_penalty);
     const vec open_extend_gap_penalty_v = simd_t::set1(k_open_gap_penalty + k_extend_gap_penalty);
 
@@ -287,29 +286,30 @@ simd_t::scores_t sw_score_simd(std::string_view const&query, simd_t::input_t con
         H_cur[0] = zero;
         vec F = zero;
         char qc = query[i - 1];
-        const vec query_upper = simd_t::set1(std::isupper(qc) ? simd_t::kMaskVal : 0);
-        const vec query_chars = simd_t::set1(std::tolower(qc));
+        const vec query_chars_orig = simd_t::set1(qc);
+        const vec query_chars_lower = simd_t::set1(std::tolower(qc));
 
         vec valid_targets_mask = simd_t::set1(simd_t::kMaskVal);
         size_t valid_targets_bitmask = size_t(-1);
         for(int j = 1; j <= maxTargetLen; ++j)
         {
-            vec target_chars;
-            vec target_chars_upper_mask = zero;
-            pack_chars(targets, j - 1, target_chars, target_chars_upper_mask, valid_targets_mask, valid_targets_bitmask);
+            vec target_chars_lower;
+            vec target_chars_orig;
+            pack_chars(targets, j - 1, target_chars_lower, target_chars_orig, valid_targets_mask, valid_targets_bitmask);
             E[j] = simd_t::max(simd_t::sub(E[j], extend_gap_penalty_v), simd_t::sub(H_cur[j - 1], open_extend_gap_penalty_v));
             F = simd_t::max(simd_t::sub(F, extend_gap_penalty_v), simd_t::sub(H_prev[j], open_extend_gap_penalty_v));
 
 
-            auto icase_char_match = simd_t::eq(query_chars, target_chars);
-            auto case_match = simd_t::_and(simd_t::eq(query_upper, target_chars_upper_mask), icase_char_match);
-
+            auto icase_char_match = simd_t::eq(query_chars_lower, target_chars_lower);
             auto icase_match_score = simd_t::blend(mismatch_penalty, icase_match_bonus, icase_char_match);
-            auto case_score = simd_t::blend(zero, case_match_add_bonus, case_match);
-            auto match_score = simd_t::add(icase_match_score, case_score);
+
+            auto case_char_match = simd_t::eq(query_chars_orig, target_chars_orig);
+            auto case_match_score = simd_t::blend(mismatch_penalty, case_match_add_bonus, case_char_match);
+
+            auto match_score = simd_t::max(icase_match_score, case_match_score);
 
             auto diag = simd_t::add(H_prev[j - 1], match_score);
-            auto H = simd_t::max(zero, simd_t::max(diag, simd_t::max(E[j], F)));
+            auto H = simd_t::max(simd_t::max(zero, diag), simd_t::max(E[j], F));
             H = simd_t::blend(zero, H, valid_targets_mask);
             H_cur[j] = H;
 
