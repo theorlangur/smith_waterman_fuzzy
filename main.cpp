@@ -372,7 +372,7 @@ int main(int argc, char *argv[])
     lines_with_scores.reserve(lines.size());
 
     constexpr size_t kThreads = 16;
-    constexpr size_t kRepeats = 1;
+    constexpr size_t kRepeats = 16;
 
     std::counting_semaphore<kThreads> work_start(0);
     std::binary_semaphore main_sem(0);
@@ -398,7 +398,6 @@ int main(int argc, char *argv[])
             std::vector<scored_line> &results = lines_with_scores_simd_par[wId];
             int i = wId * simd_t::Width;
             int n = (int)lines.size();
-            //for(int i = wId * wSize, n = wId == (kThreads - 1) ? (int)lines.size() : i + wSize; i < n; i += simd_t::Width)
             while(i < n)
             {
                 int m = (i + simd_t::Width) < n ? i + simd_t::Width : n;
