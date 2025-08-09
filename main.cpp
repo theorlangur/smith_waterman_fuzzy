@@ -10,6 +10,7 @@
 #include <thread>
 #include <barrier>
 #include <semaphore>
+#include <atomic>
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -371,6 +372,7 @@ int main(int argc, char *argv[])
     lines_with_scores.reserve(lines.size());
 
     constexpr size_t kThreads = 16;
+    constexpr size_t kRepeats = 1;
 
     std::counting_semaphore<kThreads> work_start(0);
     std::binary_semaphore main_sem(0);
@@ -380,10 +382,11 @@ int main(int argc, char *argv[])
     size_t q_size;
     size_t wSize = lines.size() / kThreads;
     bool workerCancel = false;
+    std::atomic<int> job_idx;
 
     std::vector<scored_line> lines_with_scores_simd_par[kThreads];
     for(auto &v : lines_with_scores_simd_par)
-        v.reserve(lines.size() / (kThreads - 1));
+        v.reserve(lines.size() / kThreads);
 
     auto simd_work = [&](int wId){
         while(true)
@@ -393,7 +396,10 @@ int main(int argc, char *argv[])
                 break;
             std::string_view q(query, q_size);
             std::vector<scored_line> &results = lines_with_scores_simd_par[wId];
-            for(int i = wId * wSize, n = wId == (kThreads - 1) ? (int)lines.size() : i + wSize; i < n; i += simd_t::Width)
+            int i = wId * simd_t::Width;
+            int n = (int)lines.size();
+            //for(int i = wId * wSize, n = wId == (kThreads - 1) ? (int)lines.size() : i + wSize; i < n; i += simd_t::Width)
+            while(i < n)
             {
                 int m = (i + simd_t::Width) < n ? i + simd_t::Width : n;
                 auto *pFrom = &lines[i];
@@ -406,10 +412,22 @@ int main(int argc, char *argv[])
                     if (scores[j])
                         results.emplace_back(lines[i + j], scores[j]);
                 }
+                i = job_idx.fetch_add(simd_t::Width, std::memory_order_relaxed);
             }
             fuzzy_barrier.arrive_and_wait();
         }
     };
+
+    auto sort_lines = [](std::vector<scored_line> &l)
+    {
+        std::ranges::sort(l, 
+                [](scored_line const& l1, scored_line const& l2){
+                if (l1.second != l2.second) return l1.second < l2.second;
+                return l1.first < l2.first;
+                }
+                );
+    };
+
 
     std::vector<std::jthread> workers;
     for(int i = 0; size_t(i) < kThreads; ++i)
@@ -426,13 +444,14 @@ int main(int argc, char *argv[])
             {
                 auto run_simd_par = [&]{
                     for(auto &par : lines_with_scores_simd_par) par.clear();
+                    job_idx.store(int(kThreads * simd_t::Width), std::memory_order_relaxed);
 
                     ScopeTimer measure("SIMD SW");
                     work_start.release(kThreads);
                     main_sem.acquire();
                     for(auto &par : lines_with_scores_simd_par)
                         for(auto &l : par) lines_with_scores_simd.push_back(l);
-                    std::ranges::sort(lines_with_scores_simd, std::less{}, &scored_line::second);
+                    sort_lines(lines_with_scores_simd);
                     return measure.get_duration();
                 };
                 auto run_simd = [&]{
@@ -451,10 +470,10 @@ int main(int argc, char *argv[])
                                 lines_with_scores_simd.emplace_back(lines[i + j], scores[j]);
                         }
                     }
-                    std::ranges::sort(lines_with_scores_simd, std::less{}, &scored_line::second);
+                    sort_lines(lines_with_scores_simd);
                     return measure.get_duration();
                 };
-                for(int i = 0; i < 16; ++i)
+                for(int i = 0; i < kRepeats; ++i)
                 {
                     lines_with_scores_simd.clear();
                     auto t = run_simd_par();
@@ -470,11 +489,11 @@ int main(int argc, char *argv[])
                         if (auto s = sw_score(q, sv); s > 0)
                             lines_with_scores.emplace_back(sv, s);
                     }
-                    std::ranges::sort(lines_with_scores, std::less{}, &scored_line::second);
+                    sort_lines(lines_with_scores);
                     return measure.get_duration();
                 };
 
-                for(int i = 0; i < 16; ++i)
+                for(int i = 0; i < kRepeats; ++i)
                 {
                     lines_with_scores.clear();
                     auto t = run_norm();
@@ -518,6 +537,7 @@ int main(int argc, char *argv[])
         }
         std::print("Enter query: ");
     }
+    workerCancel = true;
     
     return 0;
 }
