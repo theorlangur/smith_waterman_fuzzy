@@ -7,6 +7,9 @@
 #include <array>
 #include <ranges>
 #include <chrono>
+#include <thread>
+#include <barrier>
+#include <semaphore>
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -367,30 +370,69 @@ int main(int argc, char *argv[])
     lines_with_scores_simd.reserve(lines.size());
     lines_with_scores.reserve(lines.size());
 
+    constexpr size_t kThreads = 16;
+
+    std::counting_semaphore<kThreads> work_start(0);
+    std::binary_semaphore main_sem(0);
+    std::barrier fuzzy_barrier(kThreads, [&]{
+            main_sem.release();
+    });
+    size_t q_size;
+    size_t wSize = lines.size() / kThreads;
+    bool workerCancel = false;
+
+    std::vector<scored_line> lines_with_scores_simd_par[kThreads];
+    for(auto &v : lines_with_scores_simd_par)
+        v.reserve(lines.size() / (kThreads - 1));
+
+    auto simd_work = [&](int wId){
+        while(true)
+        {
+            work_start.acquire();
+            if (workerCancel)
+                break;
+            std::string_view q(query, q_size);
+            std::vector<scored_line> &results = lines_with_scores_simd_par[wId];
+            for(int i = wId * wSize, n = wId == (kThreads - 1) ? (int)lines.size() : i + wSize; i < n; i += simd_t::Width)
+            {
+                int m = (i + simd_t::Width) < n ? i + simd_t::Width : n;
+                auto *pFrom = &lines[i];
+                auto *pTo = &lines[m];
+                simd_t::input_t in;
+                std::copy(pFrom, pTo, in.begin());
+                auto scores = sw_score_simd(q, in/*, dbg_lane*/);
+                for(int j = 0, tn = m - i; j < tn; ++j)
+                {
+                    if (scores[j])
+                        results.emplace_back(lines[i + j], scores[j]);
+                }
+            }
+            fuzzy_barrier.arrive_and_wait();
+        }
+    };
+
+    std::vector<std::jthread> workers;
+    for(int i = 0; size_t(i) < kThreads; ++i)
+        workers.emplace_back(simd_work, i);
+
     std::print("Enter query: ");
     while(std::cin.getline(query, sizeof(query)))
     {
         std::println("Results: ");
         std::string_view q(query);
+        q_size = q.size();
         ScopeTimer::duration_t simd_duration, normal_duration;
         {
             {
                 auto run_simd_par = [&]{
+                    for(auto &par : lines_with_scores_simd_par) par.clear();
+
                     ScopeTimer measure("SIMD SW");
-                    for(int i = 0, n = (int)lines.size(); i < n; i += simd_t::Width)
-                    {
-                        int m = (i + simd_t::Width) < n ? i + simd_t::Width : n;
-                        auto *pFrom = &lines[i];
-                        auto *pTo = &lines[m];
-                        simd_t::input_t in;
-                        std::copy(pFrom, pTo, in.begin());
-                        auto scores = sw_score_simd(q, in/*, dbg_lane*/);
-                        for(int j = 0, tn = m - i; j < tn; ++j)
-                        {
-                            if (scores[j])
-                                lines_with_scores_simd.emplace_back(lines[i + j], scores[j]);
-                        }
-                    }
+                    work_start.release(kThreads);
+                    main_sem.acquire();
+                    for(auto &par : lines_with_scores_simd_par)
+                        for(auto &l : par) lines_with_scores_simd.push_back(l);
+                    std::ranges::sort(lines_with_scores_simd, std::less{}, &scored_line::second);
                     return measure.get_duration();
                 };
                 auto run_simd = [&]{
@@ -409,16 +451,16 @@ int main(int argc, char *argv[])
                                 lines_with_scores_simd.emplace_back(lines[i + j], scores[j]);
                         }
                     }
+                    std::ranges::sort(lines_with_scores_simd, std::less{}, &scored_line::second);
                     return measure.get_duration();
                 };
                 for(int i = 0; i < 16; ++i)
                 {
                     lines_with_scores_simd.clear();
-                    auto t = run_simd();
+                    auto t = run_simd_par();
                     if (!i || t < simd_duration)
                         simd_duration = t;
                 }
-                std::ranges::sort(lines_with_scores_simd, std::less{}, &scored_line::second);
             }
             {
                 auto run_norm = [&]{
@@ -428,6 +470,7 @@ int main(int argc, char *argv[])
                         if (auto s = sw_score(q, sv); s > 0)
                             lines_with_scores.emplace_back(sv, s);
                     }
+                    std::ranges::sort(lines_with_scores, std::less{}, &scored_line::second);
                     return measure.get_duration();
                 };
 
@@ -438,8 +481,6 @@ int main(int argc, char *argv[])
                     if (!i || t < normal_duration)
                         normal_duration = t;
                 }
-
-                std::ranges::sort(lines_with_scores, std::less{}, &scored_line::second);
             }
 
             for(const scored_line& l : lines_with_scores)
