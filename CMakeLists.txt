@@ -1,16 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
 
 #Fuzzy search with Smith-Waterman algorithm
+set(CXX_STANDARD 23)
 project(fuzzy_sw CXX)
 set(CMAKE_CXX_COMPILER "clang++-20")
 set(CMAKE_C_COMPILER "clang-20")
 
-set(CXX_STANDARD 23)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(SRC main.cpp)
 
-set(SRC main.cpp)
-set(HDR )
+set(SRC main.cpp fuzzy_sw_par.cpp fuzzy_sw_seq.cpp)
+set(HDR fuzzy_sw.hpp)
 
 add_executable(fuzzy_sw ${SRC} ${HDR})
 target_compile_options(fuzzy_sw PUBLIC -stdlib=libc++ -msse4.1 -mavx2)
