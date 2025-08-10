@@ -81,11 +81,16 @@ int sw_score(std::string_view const& query, std::string_view const& target/*, bo
     constexpr int extend_gap_penalty = 1;
     constexpr int open_gap_penalty = 2;
 
-    auto match = [](char c1, char c2)
+    auto match = [](char c1, char c2, bool prev_delim, bool delim)
     {
-        if (c1 == c2) return 3;
-        if (std::tolower(c1) == std::tolower(c2)) return 2;
+        int delim_bonus = (prev_delim ^ delim) ? 1 : 0;
+        if (c1 == c2) return 3 + delim_bonus;
+        if (std::tolower(c1) == std::tolower(c2)) return 2 + delim_bonus;
         return -1;
+    };
+
+    auto is_delim = [](char c){
+        return c == ' ' || c == '_' || c == '.' || c == ':' || c == '-' || c == '=' || c == ',';
     };
 
     int n = query.length();
@@ -102,14 +107,17 @@ int sw_score(std::string_view const& query, std::string_view const& target/*, bo
         H_cur[0] = 0;
         E[0] = max_penalty;
         int F = 0;
+        bool prev_delim = false;
         for(int j = 1; j <= m; ++j)
         {
+            bool delim = is_delim(target[j - 1]);
             E[j] = std::max(E[j] - extend_gap_penalty, H_cur[j - 1] - open_gap_penalty - extend_gap_penalty);
             F = std::max(F - extend_gap_penalty, H_prev[j] - open_gap_penalty - extend_gap_penalty);
-            int diag = H_prev[j - 1] + match(query[i - 1], target[j - 1]);
+            int diag = H_prev[j - 1] + match(query[i - 1], target[j - 1], prev_delim, delim);
             int H = std::max({0, diag, E[j], F});
             H_cur[j] = H;
             if (H > best) best = H;
+            prev_delim = delim;
             //if (dbg)
             //    std::println("i={}; j={}; H={}; E[j]={}; F={}; best={};", i, j, H, E[j], F, best);
         }
@@ -131,6 +139,7 @@ struct simd_prims<int16_t, 8>
     using input_t = std::array<std::string_view, Width>;
     using lengths_t = std::array<std::string_view, Width>;
     using scores_t = std::array<int_type_t, Width>;
+    using lut_data_t = int_type_t;
     static constexpr int_type_t kMaskVal = 0xFFFF;
 
     static auto set1(int_type_t v) { return _mm_set1_epi16(v); }
@@ -145,6 +154,9 @@ struct simd_prims<int16_t, 8>
     static auto blend(simd_base_t o1, simd_base_t o2, simd_base_t m) { return _mm_blendv_epi8(o1, o2, m); }
     static auto eq(simd_base_t o1, simd_base_t o2) { return _mm_cmpeq_epi16(o1, o2); }
     static auto _and(simd_base_t o1, simd_base_t o2) { return _mm_and_si128(o1, o2); }
+    static auto _or(simd_base_t o1, simd_base_t o2) { return _mm_or_si128(o1, o2); }
+    static auto _xor(simd_base_t o1, simd_base_t o2) { return _mm_xor_si128(o1, o2); }
+    static auto load(int_type_t const(&src)[Width]) { return _mm_loadu_epi16(src); }
 
     static auto unpack(simd_base_t o)
     {
@@ -165,6 +177,7 @@ struct simd_prims<int8_t, 16>
     using input_t = std::array<std::string_view, Width>;
     using lengths_t = std::array<std::string_view, Width>;
     using scores_t = std::array<int_type_t, Width>;
+    using lut_data_t = int_type_t;
     static constexpr int_type_t kMaskVal = 0xFF;
 
     static auto set1(int_type_t v) { return _mm_set1_epi8(v); }
@@ -179,6 +192,9 @@ struct simd_prims<int8_t, 16>
     static auto blend(simd_base_t o1, simd_base_t o2, simd_base_t m) { return _mm_blendv_epi8(o1, o2, m); }
     static auto eq(simd_base_t o1, simd_base_t o2) { return _mm_cmpeq_epi8(o1, o2); }
     static auto _and(simd_base_t o1, simd_base_t o2) { return _mm_and_si128(o1, o2); }
+    static auto _or(simd_base_t o1, simd_base_t o2) { return _mm_or_si128(o1, o2); }
+    static auto _xor(simd_base_t o1, simd_base_t o2) { return _mm_xor_si128(o1, o2); }
+    static auto load(int_type_t const(&src)[Width]) { return _mm_loadu_epi8(src); }
 
     static auto unpack(simd_base_t o)
     {
@@ -199,6 +215,7 @@ struct simd_prims<int8_t, 32>
     using input_t = std::array<std::string_view, Width>;
     using lengths_t = std::array<std::string_view, Width>;
     using scores_t = std::array<int_type_t, Width>;
+    using lut_data_t = int32_t;
     static constexpr int_type_t kMaskVal = 0xFF;
 
     static auto set1(int_type_t v) { return _mm256_set1_epi8(v); }
@@ -213,6 +230,9 @@ struct simd_prims<int8_t, 32>
     static auto blend(simd_base_t o1, simd_base_t o2, simd_base_t m) { return _mm256_blendv_epi8(o1, o2, m); }
     static auto eq(simd_base_t o1, simd_base_t o2) { return _mm256_cmpeq_epi8(o1, o2); }
     static auto _and(simd_base_t o1, simd_base_t o2) { return _mm256_and_si256(o1, o2); }
+    static auto _or(simd_base_t o1, simd_base_t o2) { return _mm256_or_si256(o1, o2); }
+    static auto _xor(simd_base_t o1, simd_base_t o2) { return _mm256_xor_si256(o1, o2); }
+    static auto load(int_type_t const(&src)[Width]) { return _mm256_lddqu_si256((const simd_base_t*)src); }
 
     static auto unpack(simd_base_t o)
     {
@@ -222,13 +242,150 @@ struct simd_prims<int8_t, 32>
             s[i] = pB[i];
         return s;
     }
+
+    static __m128i gather16_from_cache(const lut_data_t *pLut, __m128i idx16)
+    {
+        __m128i lo8 = idx16;
+        __m128i hi8 = _mm_srli_si128(idx16, 8);
+
+        __m256i lo8x32 = _mm256_cvtepu8_epi32(lo8);
+        __m256i hi8x32 = _mm256_cvtepu8_epi32(hi8);
+
+        __m256i g0 = _mm256_i32gather_epi32(pLut, lo8x32, 4);
+        __m256i g1 = _mm256_i32gather_epi32(pLut, hi8x32, 4);
+        __m128i lo8xi16 = _mm_packs_epi32(_mm256_castsi256_si128(g0), _mm256_extracti128_si256(g0, 1));
+        __m128i hi8xi16 = _mm_packs_epi32(_mm256_castsi256_si128(g1), _mm256_extracti128_si256(g1, 1));
+        return _mm_packs_epi16(lo8xi16, hi8xi16);
+    }
+
+    static void gather_from_cache(const lut_data_t *pLut, simd_base_t tgt, simd_base_t &out_scores)
+    {
+        __m128i lo16 = _mm256_castsi256_si128(tgt);
+        __m128i hi16 = _mm256_extracti128_si256(tgt, 1);
+
+        __m128 res_lo16 = gather16_from_cache(pLut, lo16);
+        __m128 res_hi16 = gather16_from_cache(pLut, hi16);
+
+        out_scores = _mm256_castsi128_si256(res_lo16);
+        out_scores = _mm256_inserti128_si256(out_scores, res_hi16, 1);
+    }
 };
 
 //using simd_t = simd_prims<int16_t, 8>;
 //using simd_t = simd_prims<int8_t, 16>;
 using simd_t = simd_prims<int8_t, 32>;
 
-void pack_chars(simd_t::input_t const& targets, int j, simd_t::simd_base_t &out_chars_lower, simd_t::simd_base_t &out_orig_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask)
+template<class simd_t, class T = simd_t::lut_data_t>
+struct alignas(64) ScoreCache
+{
+    static constexpr simd_t::int_type_t k_mismatch_penalty = -1;
+    static constexpr simd_t::int_type_t k_icase_match_bonus = 2;
+    static constexpr simd_t::int_type_t k_case_match_add_bonus = 1;
+    T data[256][256];
+};
+
+constexpr uint8_t tolower_u8(uint8_t c) {
+  return (c >= 'A' && c <= 'Z') ? (uint8_t)(c + 32) : c;
+}
+
+template<class simd_t, class T = simd_t::lut_data_t>
+constexpr ScoreCache<simd_t, T> GenerateGScores()
+{
+    using Cache = ScoreCache<simd_t, T>;
+    Cache res;
+    for(int i = 0; i < 256; ++i)
+    {
+        for(int j = 0; j < 256; ++j)
+        {
+            if (i == j)
+                res.data[i][j] = Cache::k_icase_match_bonus + Cache::k_case_match_add_bonus;
+            else if (tolower_u8(uint8_t(i)) == tolower_u8(uint8_t(j)))
+                res.data[i][j] = Cache::k_icase_match_bonus;
+            else
+                res.data[i][j] = Cache::k_mismatch_penalty;
+        }
+    }
+    return res;
+}
+
+alignas(64) const constinit ScoreCache<simd_t, simd_t::int_type_t> g_GScores = GenerateGScores<simd_t, simd_t::int_type_t>();
+
+constexpr size_t GetCeilPow2(size_t v)
+{
+    if ((v & (v - 1)) == 0)
+        return v;//already
+    size_t res = 1;
+    while(res < v) res <<= 1;
+    return res;
+}
+constexpr size_t GetLog2(size_t v)
+{
+    size_t res = 0;
+    while(v > 1) v >>= 1, ++res;
+    return res;
+}
+
+template<class simd_t, char... d>
+struct alignas(64) Delimiters
+{
+    static constexpr size_t kPow2 = GetCeilPow2(sizeof...(d));
+    static constexpr size_t kLog2 = GetLog2(kPow2);
+    simd_t::int_type_t dMasks[sizeof...(d)][simd_t::Width];
+
+    simd_t::simd_base_t MatchDelimiters(simd_t::simd_base_t syms) const
+    {
+        using V = simd_t::simd_base_t;
+        V temp[kPow2] = {};
+        //1. check all masks and store results locally
+        [&]<size_t... I>(std::index_sequence<I...> s){
+            ((temp[I] = simd_t::eq(syms, simd_t::load(dMasks[I]))),...);
+        }(std::make_index_sequence<sizeof...(d)>());
+
+        //2. gradually 'or' all pairs
+        auto or_stage = [&]<size_t... I>(std::index_sequence<I...> s){
+            ((temp[I] = simd_t::_or(temp[I], temp[I + sizeof...(I)])),...);
+        };
+        [&]<size_t...I>(std::index_sequence<I...> s)
+        {
+            ((or_stage(std::make_index_sequence<(1 << (kLog2 - I - 1))>())),...);
+        }(std::make_index_sequence<kLog2>());
+
+        return temp[0];
+
+        //V res = simd_t::set1(0);
+        //return [&]<size_t... I>(std::index_sequence<I...> s){
+        //    return ((res = simd_t::_or(res, simd_t::eq(syms, simd_t::load(dMasks[I])))),...);
+        //}(std::make_index_sequence<sizeof...(d)>());
+    }
+};
+
+template<class simd_t, char... d>
+constexpr Delimiters<simd_t, d...> GenerateDelimiterMasks()
+{
+    using ResT = Delimiters<simd_t, d...>;
+    ResT r;
+    auto fill_d = [](simd_t::int_type_t (&dest)[simd_t::Width], char c)
+    {
+        for(int i = 0; i < simd_t::Width; ++i) dest[i] = c;
+    };
+    [&]<size_t... I>(std::index_sequence<I...> s){
+        (fill_d(r.dMasks[I], d),...);
+    }(std::make_index_sequence<sizeof...(d)>());
+    return r;
+}
+const constinit auto g_Delimiters = GenerateDelimiterMasks<simd_t, ' ', '_', '.', ':', '-', '=', ','>();
+
+void gather_scores(char q, simd_t::simd_base_t tgt, simd_t::simd_base_t &out_scores)
+{
+    //simd_t::gather_from_cache(g_GScores.data[q], tgt, out_scores);
+    //alignas(64) simd_t::int_type_t idx[simd_t::Width];
+    simd_t::int_type_t *pB = reinterpret_cast<simd_t::int_type_t *>(&tgt);
+    simd_t::int_type_t *pS = reinterpret_cast<simd_t::int_type_t *>(&out_scores);
+    for(int i = 0; i < simd_t::Width; ++i)
+        pS[i] = g_GScores.data[q][pB[i]];
+}
+
+void pack_chars(simd_t::input_t const& targets, int j, simd_t::simd_base_t &out_orig_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask)
 {
     for(int i = 0, n = targets.size(); i < n; ++i)
     {
@@ -237,11 +394,7 @@ void pack_chars(simd_t::input_t const& targets, int j, simd_t::simd_base_t &out_
 
         auto const& t = targets[i];
         if (j < t.length())
-        {
-            char c = t[j];
-            simd_t::set_idx(i, c, out_orig_case);
-            simd_t::set_idx(i, std::tolower(c), out_chars_lower);
-        }
+            simd_t::set_idx(i, t[j], out_orig_case);
         else
         {
             out_bitmask &= ~(size_t(1) << i);
@@ -258,6 +411,7 @@ simd_t::scores_t sw_score_simd(std::string_view const&query, simd_t::input_t con
     constexpr simd_t::int_type_t k_mismatch_penalty = -1;
     constexpr simd_t::int_type_t k_icase_match_bonus = 2;
     constexpr simd_t::int_type_t k_case_match_add_bonus = 1;
+    constexpr simd_t::int_type_t k_delim_bonus = 1;
 
     using vec = simd_t::simd_base_t;
     int maxTargetLen = std::ranges::max(targets, {}, &std::string_view::length).length();
@@ -268,6 +422,7 @@ simd_t::scores_t sw_score_simd(std::string_view const&query, simd_t::input_t con
     std::vector<vec> H_cur;
     std::vector<vec> E;
 
+    const vec delim_bonus = simd_t::set1(k_delim_bonus);
     const vec max_penalty = simd_t::set1(k_max_penalty);
     const vec zero = simd_t::set1(0);
     const vec mismatch_penalty = simd_t::set1(k_mismatch_penalty);
@@ -275,7 +430,6 @@ simd_t::scores_t sw_score_simd(std::string_view const&query, simd_t::input_t con
     const vec case_match_add_bonus = simd_t::set1(k_case_match_add_bonus + k_icase_match_bonus);
     const vec extend_gap_penalty_v = simd_t::set1(k_extend_gap_penalty);
     const vec open_extend_gap_penalty_v = simd_t::set1(k_open_gap_penalty + k_extend_gap_penalty);
-
 
     vec best = simd_t::set1(0);
 
@@ -290,27 +444,34 @@ simd_t::scores_t sw_score_simd(std::string_view const&query, simd_t::input_t con
         H_cur[0] = zero;
         vec F = zero;
         char qc = query[i - 1];
-        const vec query_chars_orig = simd_t::set1(qc);
-        const vec query_chars_lower = simd_t::set1(std::tolower(qc));
+        //const vec query_chars_orig = simd_t::set1(qc);
+        //const vec query_chars_lower = simd_t::set1(std::tolower(qc));
 
+        vec prev_is_delim = zero;
         vec valid_targets_mask = simd_t::set1(simd_t::kMaskVal);
         size_t valid_targets_bitmask = size_t(-1);
         for(int j = 1; j <= maxTargetLen; ++j)
         {
             vec target_chars_lower;
             vec target_chars_orig;
-            pack_chars(targets, j - 1, target_chars_lower, target_chars_orig, valid_targets_mask, valid_targets_bitmask);
+            pack_chars(targets, j - 1, target_chars_orig, valid_targets_mask, valid_targets_bitmask);
+            vec is_delim = g_Delimiters.MatchDelimiters(target_chars_orig);
             E[j] = simd_t::max(simd_t::sub(E[j], extend_gap_penalty_v), simd_t::sub(H_cur[j - 1], open_extend_gap_penalty_v));
             F = simd_t::max(simd_t::sub(F, extend_gap_penalty_v), simd_t::sub(H_prev[j], open_extend_gap_penalty_v));
 
+            //auto icase_char_match = simd_t::eq(query_chars_lower, target_chars_lower);
+            //auto icase_match_score = simd_t::blend(mismatch_penalty, icase_match_bonus, icase_char_match);
 
-            auto icase_char_match = simd_t::eq(query_chars_lower, target_chars_lower);
-            auto icase_match_score = simd_t::blend(mismatch_penalty, icase_match_bonus, icase_char_match);
+            //auto case_char_match = simd_t::eq(query_chars_orig, target_chars_orig);
+            //auto case_match_score = simd_t::blend(mismatch_penalty, case_match_add_bonus, case_char_match);
 
-            auto case_char_match = simd_t::eq(query_chars_orig, target_chars_orig);
-            auto case_match_score = simd_t::blend(mismatch_penalty, case_match_add_bonus, case_char_match);
-
-            auto match_score = simd_t::max(icase_match_score, case_match_score);
+            //auto match_score = simd_t::max(icase_match_score, case_match_score);
+            vec match_score;
+            gather_scores(qc, target_chars_orig, match_score);
+            vec mismatches = simd_t::eq(match_score, simd_t::set1(-1));
+            vec delim_bonus_mask = simd_t::blend(simd_t::_xor(is_delim, prev_is_delim), simd_t::set1(0), mismatches);
+            vec delim_bonus_val = simd_t::blend(simd_t::set1(0), delim_bonus, delim_bonus_mask);
+            match_score = simd_t::add(delim_bonus_val, match_score);
 
             auto diag = simd_t::add(H_prev[j - 1], match_score);
             auto H = simd_t::max(simd_t::max(zero, diag), simd_t::max(E[j], F));
@@ -318,6 +479,7 @@ simd_t::scores_t sw_score_simd(std::string_view const&query, simd_t::input_t con
             H_cur[j] = H;
 
             best = simd_t::max(H, best);
+            prev_is_delim = is_delim;
         }
         std::swap(H_prev, H_cur);
     }
@@ -372,7 +534,7 @@ int main(int argc, char *argv[])
     lines_with_scores.reserve(lines.size());
 
     constexpr size_t kThreads = 16;
-    constexpr size_t kRepeats = 16;
+    constexpr size_t kRepeats = 32 * 4;
 
     std::counting_semaphore<kThreads> work_start(0);
     std::binary_semaphore main_sem(0);
