@@ -440,11 +440,15 @@ namespace fuzzy_sw
 
     struct SIMDParMatcher::Impl
     {
+        using WorkerFuncT = void(Impl::*)(int wId, void* pSIMD);
+
         ~Impl();
         void StopThreads();
         void SetupThreads(int threadCount);
         void Do();
         void WorkerFunc(int workerId);
+        template<class SIMD>
+        void WorkerFuncTpl(int workerId, void *pSIMD);
 
         //SIMDImpl<simd_prims<int16_t, 8>> m_SSE41x16;
         //SIMDImpl<simd_prims<int8_t, 16>> m_SSE41x8;
@@ -460,6 +464,11 @@ namespace fuzzy_sw
         std::atomic<size_t> m_WorkerChunkOffset{0};//job_idx
         std::atomic<size_t> m_WorkersLeft{0};
         Input *m_pInputTargets = nullptr;
+        Result *m_pResult = nullptr;
+        std::string_view m_Query;
+
+        WorkerFuncT m_WorkerFunc = nullptr;
+        void *m_pSIMDTypeErased = nullptr;
     };
 
     SIMDParMatcher::SIMDParMatcher(Config const& cfg):
@@ -510,11 +519,30 @@ namespace fuzzy_sw
     {
         Result res;
         m_Impl->m_pInputTargets = &targets;
+        m_Impl->m_Query = query;
+        m_Impl->m_pResult = &res;
         std::ranges::sort(targets, std::greater{}, &std::string_view::length);
+
+        if (auto &impl = m_Impl->m_AVX2x8; impl.QueryFits(query))
+        {
+            m_Impl->m_WorkerFunc = &Impl::WorkerFuncTpl<decltype(Impl::m_AVX2x8)>;
+            m_Impl->m_pSIMDTypeErased = &impl;
+        }
+        else if (auto &impl = m_Impl->m_AVX2x16; impl.QueryFits(query))
+        {
+            m_Impl->m_WorkerFunc = &Impl::WorkerFuncTpl<decltype(Impl::m_AVX2x16)>;
+            m_Impl->m_pSIMDTypeErased = &impl;
+        }
+
+        m_Impl->Do();
 
         if (params.sortResults)
             std::ranges::sort(res, std::greater{}, &ResultItem::score);
+
+        m_Impl->m_WorkerFunc = nullptr;
         m_Impl->m_pInputTargets = nullptr;
+        m_Impl->m_pSIMDTypeErased = nullptr;
+        m_Impl->m_pResult = nullptr;
         return res;
     }
 
@@ -554,13 +582,45 @@ namespace fuzzy_sw
             m_WorkerThreads.emplace_back(&Impl::WorkerFunc, this, i);
     }
 
+
     void SIMDParMatcher::Impl::Do()
     {
-        m_WorkersLeft.store(m_WorkerThreads.size(), std::memory_order_relaxed);
-        m_SemWorkStart.release(m_WorkerThreads.size());
+        size_t nThreads = m_WorkerThreads.size();
+        m_WorkersLeft.store(nThreads, std::memory_order_relaxed);
+        m_WorkerChunkOffset.store(nThreads * m_WorkerWidth, std::memory_order_relaxed);
+        for(auto &par : m_WorkerResults) par.clear();
+        m_SemWorkStart.release(nThreads);
 
         //now we wait
         m_SemMain.acquire();
+
+        for(auto &par : m_WorkerResults)
+            for(auto &l : par) m_pResult->push_back(l);
+    }
+
+    template<class simd_t>
+    void SIMDParMatcher::Impl::WorkerFuncTpl(int workerId, void *pSIMD)
+    {
+        simd_t &simd = *reinterpret_cast<simd_t*>(pSIMD);
+        auto &lines = *m_pInputTargets;
+        auto &results = m_WorkerResults[workerId];
+        size_t i = workerId * m_WorkerWidth;
+        size_t n = m_pInputTargets->size();
+        while(i < n)
+        {
+            size_t m = (i + m_WorkerWidth) < n ? i + m_WorkerWidth : n;
+            auto *pFrom = &lines[i];
+            auto *pTo = &lines[m];
+            typename simd_t::input_t in;
+            std::copy(pFrom, pTo, in.begin());
+            auto scores = simd.sw_score_simd(m_Query, in);
+            for(int j = 0, tn = m - i; j < tn; ++j)
+            {
+                if (scores[j])
+                    results.emplace_back(lines[i + j], scores[j]);
+            }
+            i = m_WorkerChunkOffset.fetch_add(m_WorkerWidth, std::memory_order_relaxed);
+        }
     }
 
     void SIMDParMatcher::Impl::WorkerFunc(int workerId)
@@ -571,9 +631,7 @@ namespace fuzzy_sw
             if (m_WorkerCancel)
                 break;
             //...useful work
-            int i = workerId * m_WorkerWidth;
-            //int n = (int)lines.size();
-
+            (this->*m_WorkerFunc)(workerId, m_pSIMDTypeErased);
             if (m_WorkersLeft.fetch_sub(1, std::memory_order_relaxed) == 1)
             {
                 //this was the last worker to finish, it sets the main semaphore
