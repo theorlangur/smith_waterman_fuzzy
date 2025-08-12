@@ -12,6 +12,9 @@ set(SRC main.cpp fuzzy_sw_par.cpp fuzzy_sw_seq.cpp)
 set(HDR fuzzy_sw.hpp)
 
 add_executable(fuzzy_sw ${SRC} ${HDR})
+# target_compile_options(fuzzy_sw PRIVATE -fsanitize=address)
+# target_link_options(fuzzy_sw PRIVATE  -fsanitize=address)
+
 target_compile_options(fuzzy_sw PUBLIC -stdlib=libc++ -msse4.1 -mavx2)
 target_compile_definitions(fuzzy_sw PUBLIC _LIBCPP_ENABLE_EXPERIMENTAL)
 target_link_options(fuzzy_sw PUBLIC  -stdlib=libc++ -L/usr/lib/llvm-20/lib)
