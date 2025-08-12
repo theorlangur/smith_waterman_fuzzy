@@ -7,10 +7,6 @@
 #include <array>
 #include <ranges>
 #include <chrono>
-#include <thread>
-#include <barrier>
-#include <semaphore>
-#include <atomic>
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -19,6 +15,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include "fuzzy_sw.hpp"
 
 class ScopeTimer final {
 public:
@@ -487,17 +485,16 @@ simd_t::scores_t sw_score_simd(std::string_view const&query, simd_t::input_t con
     return simd_t::unpack(best);
 }
 
-using scored_line = std::pair<std::string_view, int>;
 template<>
-struct std::formatter<scored_line, char>
+struct std::formatter<fuzzy_sw::SIMDParMatcher::ResultItem, char>
 {
     template<class ParseContext>
     constexpr ParseContext::iterator parse(ParseContext& ctx) { return ctx.begin(); }
  
     template<class FmtContext>
-    FmtContext::iterator format(scored_line const& s, FmtContext& ctx) const
+    FmtContext::iterator format(fuzzy_sw::SIMDParMatcher::ResultItem const& s, FmtContext& ctx) const
     {
-        return std::format_to(ctx.out(), "Score: {}; {}", s.second, s.first);
+        return std::format_to(ctx.out(), "Score: {}; {}", s.score, s.target);
     }
 };
 
@@ -521,168 +518,93 @@ int main(int argc, char *argv[])
     const char *pContent = (const char*)mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
     std::string_view content(pContent, st.st_size);
 
-    auto lines = std::views::split(content, std::string_view{"\n"}) 
+    auto lines_orig = std::views::split(content, std::string_view{"\n"}) 
                 | std::views::transform([](auto r) { return std::string_view(r.begin(), r.end()); }) 
                 | std::ranges::to<std::vector>();
 
-    std::ranges::sort(lines, std::greater{}, &std::string_view::length);
-
     char query[256];
-    std::vector<scored_line> lines_with_scores_simd;
-    std::vector<scored_line> lines_with_scores;
-    lines_with_scores_simd.reserve(lines.size());
-    lines_with_scores.reserve(lines.size());
 
     constexpr size_t kThreads = 16;
-    constexpr size_t kRepeats = 32 * 4;
+    constexpr size_t kRepeats = 1;//32 * 4;
 
-    std::counting_semaphore<kThreads> work_start(0);
-    std::binary_semaphore main_sem(0);
-    std::barrier fuzzy_barrier(kThreads, [&]{
-            main_sem.release();
-    });
-    size_t q_size;
-    size_t wSize = lines.size() / kThreads;
-    bool workerCancel = false;
-    std::atomic<int> job_idx;
-
-    std::vector<scored_line> lines_with_scores_simd_par[kThreads];
-    for(auto &v : lines_with_scores_simd_par)
-        v.reserve(lines.size() / kThreads);
-
-    auto simd_work = [&](int wId){
-        while(true)
-        {
-            work_start.acquire();
-            if (workerCancel)
-                break;
-            std::string_view q(query, q_size);
-            std::vector<scored_line> &results = lines_with_scores_simd_par[wId];
-            int i = wId * simd_t::Width;
-            int n = (int)lines.size();
-            while(i < n)
-            {
-                int m = (i + simd_t::Width) < n ? i + simd_t::Width : n;
-                auto *pFrom = &lines[i];
-                auto *pTo = &lines[m];
-                simd_t::input_t in;
-                std::copy(pFrom, pTo, in.begin());
-                auto scores = sw_score_simd(q, in/*, dbg_lane*/);
-                for(int j = 0, tn = m - i; j < tn; ++j)
-                {
-                    if (scores[j])
-                        results.emplace_back(lines[i + j], scores[j]);
-                }
-                i = job_idx.fetch_add(simd_t::Width, std::memory_order_relaxed);
-            }
-            fuzzy_barrier.arrive_and_wait();
-        }
-    };
-
-    auto sort_lines = [](std::vector<scored_line> &l)
+    auto sort_lines = [](fuzzy_sw::SIMDParMatcher::Result &l)
     {
         std::ranges::sort(l, 
-                [](scored_line const& l1, scored_line const& l2){
-                if (l1.second != l2.second) return l1.second < l2.second;
-                return l1.first < l2.first;
+                [](fuzzy_sw::SIMDParMatcher::ResultItem const& l1, fuzzy_sw::SIMDParMatcher::ResultItem const& l2){
+                if (l1.score != l2.score) return l1.score < l2.score;
+                return l1.target < l2.target;
                 }
                 );
     };
 
-
-    std::vector<std::jthread> workers;
-    for(int i = 0; size_t(i) < kThreads; ++i)
-        workers.emplace_back(simd_work, i);
+    fuzzy_sw::SIMDParMatcher simdMatcher;
+    fuzzy_sw::SIMDParMatcher::Result lines_with_scores_simd;
+    fuzzy_sw::SIMDParMatcher::Result lines_with_scores_normal;
+    simdMatcher.SetupThreads(kThreads);
 
     std::print("Enter query: ");
     while(std::cin.getline(query, sizeof(query)))
     {
         std::println("Results: ");
         std::string_view q(query);
-        q_size = q.size();
         ScopeTimer::duration_t simd_duration, normal_duration;
         {
             {
-                auto run_simd_par = [&]{
-                    for(auto &par : lines_with_scores_simd_par) par.clear();
-                    job_idx.store(int(kThreads * simd_t::Width), std::memory_order_relaxed);
-
-                    ScopeTimer measure("SIMD SW");
-                    work_start.release(kThreads);
-                    main_sem.acquire();
-                    for(auto &par : lines_with_scores_simd_par)
-                        for(auto &l : par) lines_with_scores_simd.push_back(l);
-                    sort_lines(lines_with_scores_simd);
-                    return measure.get_duration();
-                };
-                auto run_simd = [&]{
-                    ScopeTimer measure("SIMD SW");
-                    for(int i = 0, n = (int)lines.size(); i < n; i += simd_t::Width)
-                    {
-                        int m = (i + simd_t::Width) < n ? i + simd_t::Width : n;
-                        auto *pFrom = &lines[i];
-                        auto *pTo = &lines[m];
-                        simd_t::input_t in;
-                        std::copy(pFrom, pTo, in.begin());
-                        auto scores = sw_score_simd(q, in/*, dbg_lane*/);
-                        for(int j = 0, tn = m - i; j < tn; ++j)
-                        {
-                            if (scores[j])
-                                lines_with_scores_simd.emplace_back(lines[i + j], scores[j]);
-                        }
-                    }
-                    sort_lines(lines_with_scores_simd);
-                    return measure.get_duration();
-                };
                 for(int i = 0; i < kRepeats; ++i)
                 {
                     lines_with_scores_simd.clear();
-                    auto t = run_simd_par();
-                    if (!i || t < simd_duration)
-                        simd_duration = t;
+                    {
+                        auto lines = lines_orig;
+                        ScopeTimer measure("SIMD SW");
+                        lines_with_scores_simd = simdMatcher.match_par(q, std::move(lines), {});
+                        auto t = measure.get_duration();
+                        if (!i || t < simd_duration)
+                            simd_duration = t;
+                    }
+                    sort_lines(lines_with_scores_simd);
                 }
             }
             {
                 auto run_norm = [&]{
                     ScopeTimer measure("Simple SW");
-                    for(const auto &sv : lines)
+                    for(const auto &sv : lines_orig)
                     {
-                        if (auto s = sw_score(q, sv); s > 0)
-                            lines_with_scores.emplace_back(sv, s);
+                        if (auto s = fuzzy_sw::match(q, sv); s > 0)
+                            lines_with_scores_normal.emplace_back(sv, s);
                     }
-                    sort_lines(lines_with_scores);
                     return measure.get_duration();
                 };
 
                 for(int i = 0; i < kRepeats; ++i)
                 {
-                    lines_with_scores.clear();
+                    lines_with_scores_normal.clear();
                     auto t = run_norm();
+                    sort_lines(lines_with_scores_normal);
                     if (!i || t < normal_duration)
                         normal_duration = t;
                 }
             }
 
-            for(const scored_line& l : lines_with_scores)
+            for(const auto& l : lines_with_scores_normal)
             {
                 std::println("{}", l);
             }
-            if (lines_with_scores_simd != lines_with_scores)
+            if (lines_with_scores_simd != lines_with_scores_normal)
             {
                 std::println("SIMD failed. Differences:");
-                if (lines_with_scores_simd.size() != lines_with_scores.size())
-                    std::println("SIMD size {} vs Normal size {}", lines_with_scores_simd.size(), lines_with_scores.size());
+                if (lines_with_scores_simd.size() != lines_with_scores_normal.size())
+                    std::println("SIMD size {} vs Normal size {}", lines_with_scores_simd.size(), lines_with_scores_normal.size());
                 else
                 {
-                    for(size_t i = 0, n = lines_with_scores.size(); i < n; ++i)
+                    for(size_t i = 0, n = lines_with_scores_normal.size(); i < n; ++i)
                     {
-                        if (lines_with_scores_simd[i] != lines_with_scores[i])
+                        if (lines_with_scores_simd[i] != lines_with_scores_normal[i])
                         {
                             std::println("Position {}", i);
-                            std::println("SIMD: Line: {};", lines_with_scores_simd[i].first);
-                            std::println("SIMD: Score: {};", lines_with_scores_simd[i].second);
-                            std::println("Normal: Line: {};", lines_with_scores[i].first);
-                            std::println("Normal: Score: {};", lines_with_scores[i].second);
+                            std::println("SIMD: Line: {};", lines_with_scores_simd[i].target);
+                            std::println("SIMD: Score: {};", lines_with_scores_simd[i].score);
+                            std::println("Normal: Line: {};", lines_with_scores_normal[i].target);
+                            std::println("Normal: Score: {};", lines_with_scores_normal[i].score);
                         }
                     }
                 }
@@ -698,7 +620,7 @@ int main(int argc, char *argv[])
         }
         std::print("Enter query: ");
     }
-    workerCancel = true;
+    std::println("Finishing...");
     
     return 0;
 }
