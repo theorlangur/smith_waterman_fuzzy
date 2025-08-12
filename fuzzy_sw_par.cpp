@@ -1,5 +1,9 @@
 #include "fuzzy_sw.hpp"
 
+#include <ranges>
+#include <thread>
+#include <barrier>
+#include <semaphore>
 #include <algorithm>
 #include <immintrin.h>
 
@@ -328,7 +332,9 @@ namespace fuzzy_sw
     struct SIMDImpl
     {
         using vec = simd_t::simd_base_t;
+        using input_t = simd_t::input_t;
 
+        static constexpr auto kWidth = simd_t::Width;
         Config m_Config;
         ScoreCache<simd_t> m_LUTCache;
         const Delimiters<simd_t, ' ', '_', '.', ':', '-', '=', ','> m_Delimiters;
@@ -337,6 +343,11 @@ namespace fuzzy_sw
         const vec zero = simd_t::set1(0);
         vec extend_gap_penalty_v;
         vec open_extend_gap_penalty_v;
+
+        bool QueryFits(std::string_view const& q) const
+        {
+            return ((int)std::numeric_limits<typename simd_t::int_type_t>::min() <= (q.length() * (m_Config.open_gap_penalty + m_Config.extend_gap_penalty)));
+        }
 
         void Setup(Config const& cfg)
         {
@@ -429,10 +440,26 @@ namespace fuzzy_sw
 
     struct SIMDParMatcher::Impl
     {
+        ~Impl();
+        void StopThreads();
+        void SetupThreads(int threadCount);
+        void Do();
+        void WorkerFunc(int workerId);
+
         //SIMDImpl<simd_prims<int16_t, 8>> m_SSE41x16;
         //SIMDImpl<simd_prims<int8_t, 16>> m_SSE41x8;
         SIMDImpl<simd_prims<int16_t,16>> m_AVX2x16;
         SIMDImpl<simd_prims<int8_t, 32>> m_AVX2x8;
+
+        int m_WorkerWidth = 0;
+        bool m_WorkerCancel = false;
+        std::counting_semaphore<> m_SemWorkStart{0};
+        std::binary_semaphore m_SemMain{0};
+        std::vector<std::jthread> m_WorkerThreads;
+        std::vector<Result> m_WorkerResults;
+        std::atomic<size_t> m_WorkerChunkOffset{0};//job_idx
+        std::atomic<size_t> m_WorkersLeft{0};
+        Input *m_pInputTargets = nullptr;
     };
 
     SIMDParMatcher::SIMDParMatcher(Config const& cfg):
@@ -448,13 +475,110 @@ namespace fuzzy_sw
     {
     }
 
-    std::vector<int> SIMDParMatcher::match(std::string_view const&query, std::vector<std::string_view> const& targets)
+    SIMDParMatcher::Result SIMDParMatcher::match(std::string_view const&query, Input &&targets, Param const& params)
     {
-        return {};
+        Result res;
+        std::ranges::sort(targets, std::greater{}, &std::string_view::length);
+        auto Match = [&](auto &impl)
+        {
+            using simd_impl_t = std::remove_cvref_t<decltype(impl)>;
+            res.reserve(targets.size());
+            for(size_t i = 0, n = targets.size(); i < n; i += simd_impl_t::kWidth)
+            {
+                typename simd_impl_t::input_t block;
+                size_t l = (i + simd_impl_t::kWidth) < n ? simd_impl_t::kWidth : (n - i);
+                for(size_t j = 0; j < l; ++j)
+                    block[j] = targets[i + j];
+                auto scores = impl.sw_score_simd(query, block);
+                for(size_t j = 0; j < l; ++j)
+                    if (auto s = scores[i + j]; s > params.scoreThreshold)
+                        res.emplace_back(targets[i + j], s);
+            }
+        };
+
+        if (auto &impl = m_Impl->m_AVX2x8; impl.QueryFits(query))
+            Match(impl);
+        else if (auto &impl = m_Impl->m_AVX2x16; impl.QueryFits(query))
+            Match(impl);
+
+        if (params.sortResults)
+            std::ranges::sort(res, std::greater{}, &ResultItem::score);
+        return res;
     }
 
-    std::vector<int> SIMDParMatcher::match_par(std::string_view const&query, std::vector<std::string_view> const& targets)
+    SIMDParMatcher::Result SIMDParMatcher::match_par(std::string_view const&query, Input &&targets, Param const& params)
     {
-        return {};
+        Result res;
+        m_Impl->m_pInputTargets = &targets;
+        std::ranges::sort(targets, std::greater{}, &std::string_view::length);
+
+        if (params.sortResults)
+            std::ranges::sort(res, std::greater{}, &ResultItem::score);
+        m_Impl->m_pInputTargets = nullptr;
+        return res;
+    }
+
+    void SIMDParMatcher::SetupThreads(int threadCount)
+    {
+        m_Impl->SetupThreads(threadCount);
+    }
+
+    void SIMDParMatcher::StopThreads()
+    {
+        m_Impl->StopThreads();
+    }
+
+
+    /**********************************************************************/
+    /* SIMDParMatcher::Impl                                               */
+    /**********************************************************************/
+    SIMDParMatcher::Impl::~Impl()
+    {
+        StopThreads();
+    }
+
+    void SIMDParMatcher::Impl::StopThreads()
+    {
+        m_WorkerCancel = true;
+        m_SemWorkStart.release(m_WorkerThreads.size());
+        m_WorkerThreads.resize(0);//threads will be joined here
+        m_WorkerCancel = false;
+    }
+
+    void SIMDParMatcher::Impl::SetupThreads(int threadCount)
+    {
+        StopThreads();
+        m_WorkerResults.resize(threadCount);
+
+        for(int i = 0; i < threadCount; ++i)
+            m_WorkerThreads.emplace_back(&Impl::WorkerFunc, this, i);
+    }
+
+    void SIMDParMatcher::Impl::Do()
+    {
+        m_WorkersLeft.store(m_WorkerThreads.size(), std::memory_order_relaxed);
+        m_SemWorkStart.release(m_WorkerThreads.size());
+
+        //now we wait
+        m_SemMain.acquire();
+    }
+
+    void SIMDParMatcher::Impl::WorkerFunc(int workerId)
+    {
+        while(true)
+        {
+            m_SemWorkStart.acquire();
+            if (m_WorkerCancel)
+                break;
+            //...useful work
+            int i = workerId * m_WorkerWidth;
+            //int n = (int)lines.size();
+
+            if (m_WorkersLeft.fetch_sub(1, std::memory_order_relaxed) == 1)
+            {
+                //this was the last worker to finish, it sets the main semaphore
+                m_SemMain.release();
+            }
+        }
     }
 }

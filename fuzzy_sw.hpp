@@ -27,8 +27,25 @@ namespace fuzzy_sw
         SIMDParMatcher(Config const& cfg = {});
         ~SIMDParMatcher();
 
-        std::vector<int> match(std::string_view const&query, std::vector<std::string_view> const& targets);
-        std::vector<int> match_par(std::string_view const&query, std::vector<std::string_view> const& targets);
+        using Input = std::vector<std::string_view>;
+        struct ResultItem
+        {
+            std::string_view target;
+            int score;
+        };
+        using Result = std::vector<ResultItem>;
+
+        struct Param
+        {
+            int scoreThreshold = 0;
+            bool sortResults = false;
+        };
+
+        void SetupThreads(int threadCount);
+        void StopThreads();
+
+        Result match(std::string_view const&query, Input &&targets, Param const& params);
+        Result match_par(std::string_view const&query, Input &&targets, Param const& params);
     private:
         Config m_Config;
         std::unique_ptr<Impl> m_Impl;
