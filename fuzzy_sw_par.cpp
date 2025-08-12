@@ -282,14 +282,12 @@ namespace fuzzy_sw
 
         constexpr Delimiters<simd_t, d...>()
         {
-            using ResT = Delimiters<simd_t, d...>;
-            ResT r;
             auto fill_d = [](simd_t::int_type_t (&dest)[simd_t::Width], char c)
             {
                 for(int i = 0; i < simd_t::Width; ++i) dest[i] = c;
             };
             [&]<size_t... I>(std::index_sequence<I...> s){
-                (fill_d(r.dMasks[I], d),...);
+                (fill_d(dMasks[I], d),...);
             }(std::make_index_sequence<sizeof...(d)>());
         }
 
@@ -413,8 +411,8 @@ namespace fuzzy_sw
                     vec target_chars_orig;
                     pack_chars(targets, j - 1, target_chars_orig, valid_targets_mask, valid_targets_bitmask);
                     vec is_delim = m_Delimiters.MatchDelimiters(target_chars_orig);
-                    E[j] = simd_t::max(simd_t::sub(E[j], extend_gap_penalty_v), simd_t::sub(H_cur[j - 1], open_extend_gap_penalty_v));
-                    F = simd_t::max(simd_t::sub(F, extend_gap_penalty_v), simd_t::sub(H_prev[j], open_extend_gap_penalty_v));
+                    E[j] = simd_t::max(simd_t::add(E[j], extend_gap_penalty_v), simd_t::add(H_cur[j - 1], open_extend_gap_penalty_v));
+                    F = simd_t::max(simd_t::add(F, extend_gap_penalty_v), simd_t::add(H_prev[j], open_extend_gap_penalty_v));
 
                     vec match_score;
                     m_LUTCache.Gather(qc, target_chars_orig, match_score);
@@ -527,11 +525,13 @@ namespace fuzzy_sw
         {
             m_Impl->m_WorkerFunc = &Impl::WorkerFuncTpl<decltype(Impl::m_AVX2x8)>;
             m_Impl->m_pSIMDTypeErased = &impl;
+            m_Impl->m_WorkerWidth = std::remove_cvref_t<decltype(impl)>::kWidth;
         }
         else if (auto &impl = m_Impl->m_AVX2x16; impl.QueryFits(query))
         {
             m_Impl->m_WorkerFunc = &Impl::WorkerFuncTpl<decltype(Impl::m_AVX2x16)>;
             m_Impl->m_pSIMDTypeErased = &impl;
+            m_Impl->m_WorkerWidth = std::remove_cvref_t<decltype(impl)>::kWidth;
         }
 
         m_Impl->Do();

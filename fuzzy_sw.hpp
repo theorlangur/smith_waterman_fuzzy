@@ -32,6 +32,8 @@ namespace fuzzy_sw
         {
             std::string_view target;
             int score;
+
+            bool operator==(ResultItem const&) const = default;
         };
         using Result = std::vector<ResultItem>;
 
