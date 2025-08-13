@@ -37,6 +37,21 @@ namespace fuzzy_sw
         };
         using Result = std::vector<ResultItem>;
 
+        struct CharSource
+        {
+            virtual size_t length() const = 0;
+            virtual size_t read(char *pDest, size_t off, size_t n) const;
+        };
+        using CharSourceInput = std::vector<CharSource*>;
+        struct CharSourceResultItem
+        {
+            CharSource* target;
+            int score;
+
+            bool operator==(CharSourceResultItem const&) const = default;
+        };
+        using CharSourceResult = std::vector<CharSourceResultItem>;
+
         struct Param
         {
             int scoreThreshold = 0;
@@ -48,6 +63,9 @@ namespace fuzzy_sw
 
         Result match(std::string_view const&query, Input &&targets, Param const& params);
         Result match_par(std::string_view const&query, Input &&targets, Param const& params);
+
+        CharSourceResult match(std::string_view const&query, CharSourceInput &&targets, Param const& params);
+        CharSourceResult match_par(std::string_view const&query, CharSourceInput &&targets, Param const& params);
     private:
         Config m_Config;
         std::unique_ptr<Impl> m_Impl;

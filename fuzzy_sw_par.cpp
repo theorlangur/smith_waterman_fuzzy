@@ -13,24 +13,39 @@ namespace fuzzy_sw
         template<typename IntType, size_t W>
         struct simd_prims;
 
-        template<>
-        struct simd_prims<int16_t, 8>
+        template<typename IntType, size_t W, typename simd_t>
+        struct simd_prims_base
         {
-            static constexpr size_t Width = 8;
-            using int_type_t = int16_t;
-            using simd_base_t = __m128i;
-            using input_t = std::array<std::string_view, Width>;
-            using lengths_t = std::array<std::string_view, Width>;
-            using scores_t = std::array<int_type_t, Width>;
-            using lut_data_t = int_type_t;
-            static constexpr int_type_t kMaskVal = 0xFFFF;
+            static constexpr size_t Width = W;
+            using int_type_t = IntType;
+            using simd_base_t = simd_t;
 
-            static auto set1(int_type_t v) { return _mm_set1_epi16(v); }
+            using input_t = std::array<std::string_view, W>;
+            using input_char_src_t = std::array<SIMDParMatcher::CharSource*, W>;
+            using scores_t = std::array<IntType, W>;
+            using lut_data_t = int8_t;
+            static constexpr IntType kMaskVal = IntType(-1);
+
             static auto set_idx(int idx, int_type_t v, simd_base_t &t) 
             { 
                 int_type_t *p = reinterpret_cast<int_type_t *>(&t);
                 p[idx] = v;
             }
+
+            static auto unpack(simd_base_t o)
+            {
+                scores_t s;
+                int_type_t *pB = reinterpret_cast<int_type_t *>(&o);
+                for(int i = 0; i < Width; ++i)
+                    s[i] = pB[i];
+                return s;
+            }
+        };
+
+        template<>
+        struct simd_prims<int16_t, 8>: simd_prims_base<int16_t, 8, __m128i>
+        {
+            static auto set1(int_type_t v) { return _mm_set1_epi16(v); }
             static auto sub(simd_base_t o1, simd_base_t o2) { return _mm_sub_epi16(o1, o2); }
             static auto add(simd_base_t o1, simd_base_t o2) { return _mm_add_epi16(o1, o2); }
             static auto max(simd_base_t o1, simd_base_t o2) { return _mm_max_epi16(o1, o2); }
@@ -40,35 +55,12 @@ namespace fuzzy_sw
             static auto _or(simd_base_t o1, simd_base_t o2) { return _mm_or_si128(o1, o2); }
             static auto _xor(simd_base_t o1, simd_base_t o2) { return _mm_xor_si128(o1, o2); }
             static auto load(int_type_t const(&src)[Width]) { return _mm_loadu_epi16(src); }
-
-            static auto unpack(simd_base_t o)
-            {
-                scores_t s;
-                int_type_t *pB = reinterpret_cast<int_type_t *>(&o);
-                for(int i = 0; i < Width; ++i)
-                    s[i] = pB[i];
-                return s;
-            }
         };
 
         template<>
-        struct simd_prims<int8_t, 16>
+        struct simd_prims<int8_t, 16>: simd_prims_base<int8_t, 16, __m128i>
         {
-            static constexpr size_t Width = 16;
-            using int_type_t = int8_t;
-            using simd_base_t = __m128i;
-            using input_t = std::array<std::string_view, Width>;
-            using lengths_t = std::array<std::string_view, Width>;
-            using scores_t = std::array<int_type_t, Width>;
-            using lut_data_t = int_type_t;
-            static constexpr int_type_t kMaskVal = 0xFF;
-
             static auto set1(int_type_t v) { return _mm_set1_epi8(v); }
-            static auto set_idx(int idx, int_type_t v, simd_base_t &t) 
-            { 
-                int_type_t *p = reinterpret_cast<int_type_t *>(&t);
-                p[idx] = v;
-            }
             static auto sub(simd_base_t o1, simd_base_t o2) { return _mm_sub_epi8(o1, o2); }
             static auto add(simd_base_t o1, simd_base_t o2) { return _mm_add_epi8(o1, o2); }
             static auto max(simd_base_t o1, simd_base_t o2) { return _mm_max_epi8(o1, o2); }
@@ -78,35 +70,12 @@ namespace fuzzy_sw
             static auto _or(simd_base_t o1, simd_base_t o2) { return _mm_or_si128(o1, o2); }
             static auto _xor(simd_base_t o1, simd_base_t o2) { return _mm_xor_si128(o1, o2); }
             static auto load(int_type_t const(&src)[Width]) { return _mm_loadu_epi8(src); }
-
-            static auto unpack(simd_base_t o)
-            {
-                scores_t s;
-                int_type_t *pB = reinterpret_cast<int_type_t *>(&o);
-                for(int i = 0; i < Width; ++i)
-                    s[i] = pB[i];
-                return s;
-            }
         };
 
         template<>
-        struct simd_prims<int8_t, 32>
+        struct simd_prims<int8_t, 32>: simd_prims_base<int8_t, 32, __m256i>
         {
-            static constexpr size_t Width = 32;
-            using int_type_t = int8_t;
-            using simd_base_t = __m256i;
-            using input_t = std::array<std::string_view, Width>;
-            using lengths_t = std::array<std::string_view, Width>;
-            using scores_t = std::array<int_type_t, Width>;
-            using lut_data_t = int8_t;
-            static constexpr int_type_t kMaskVal = 0xFF;
-
             static auto set1(int_type_t v) { return _mm256_set1_epi8(v); }
-            static auto set_idx(int idx, int_type_t v, simd_base_t &t) 
-            { 
-                int_type_t *p = reinterpret_cast<int_type_t *>(&t);
-                p[idx] = v;
-            }
             static auto sub(simd_base_t o1, simd_base_t o2) { return _mm256_sub_epi8(o1, o2); }
             static auto add(simd_base_t o1, simd_base_t o2) { return _mm256_add_epi8(o1, o2); }
             static auto max(simd_base_t o1, simd_base_t o2) { return _mm256_max_epi8(o1, o2); }
@@ -116,35 +85,12 @@ namespace fuzzy_sw
             static auto _or(simd_base_t o1, simd_base_t o2) { return _mm256_or_si256(o1, o2); }
             static auto _xor(simd_base_t o1, simd_base_t o2) { return _mm256_xor_si256(o1, o2); }
             static auto load(int_type_t const(&src)[Width]) { return _mm256_lddqu_si256((const simd_base_t*)src); }
-
-            static auto unpack(simd_base_t o)
-            {
-                scores_t s;
-                int_type_t *pB = reinterpret_cast<int_type_t *>(&o);
-                for(int i = 0; i < Width; ++i)
-                    s[i] = pB[i];
-                return s;
-            }
         };
 
         template<>
-        struct simd_prims<int16_t, 16>
+        struct simd_prims<int16_t, 16>: simd_prims_base<int16_t, 16, __m256i>
         {
-            static constexpr size_t Width = 16;
-            using int_type_t = int16_t;
-            using simd_base_t = __m256i;
-            using input_t = std::array<std::string_view, Width>;
-            using lengths_t = std::array<std::string_view, Width>;
-            using scores_t = std::array<int_type_t, Width>;
-            using lut_data_t = int8_t;
-            static constexpr int_type_t kMaskVal = 0xFFFF;
-
             static auto set1(int_type_t v) { return _mm256_set1_epi16(v); }
-            static auto set_idx(int idx, int_type_t v, simd_base_t &t) 
-            { 
-                int_type_t *p = reinterpret_cast<int_type_t *>(&t);
-                p[idx] = v;
-            }
             static auto sub(simd_base_t o1, simd_base_t o2) { return _mm256_sub_epi16(o1, o2); }
             static auto add(simd_base_t o1, simd_base_t o2) { return _mm256_add_epi16(o1, o2); }
             static auto max(simd_base_t o1, simd_base_t o2) { return _mm256_max_epi16(o1, o2); }
@@ -154,35 +100,12 @@ namespace fuzzy_sw
             static auto _or(simd_base_t o1, simd_base_t o2) { return _mm256_or_si256(o1, o2); }
             static auto _xor(simd_base_t o1, simd_base_t o2) { return _mm256_xor_si256(o1, o2); }
             static auto load(int_type_t const(&src)[Width]) { return _mm256_lddqu_si256((const simd_base_t*)src); }
-
-            static auto unpack(simd_base_t o)
-            {
-                scores_t s;
-                int_type_t *pB = reinterpret_cast<int_type_t *>(&o);
-                for(int i = 0; i < Width; ++i)
-                    s[i] = pB[i];
-                return s;
-            }
         };
 
         template<>
-        struct simd_prims<int32_t, 8>
+        struct simd_prims<int32_t, 8>: simd_prims_base<int32_t, 8, __m256i>
         {
-            static constexpr size_t Width = 8;
-            using int_type_t = int32_t;
-            using simd_base_t = __m256i;
-            using input_t = std::array<std::string_view, Width>;
-            using lengths_t = std::array<std::string_view, Width>;
-            using scores_t = std::array<int_type_t, Width>;
-            using lut_data_t = int8_t;
-            static constexpr int_type_t kMaskVal = 0xFFFFFFFF;
-
             static auto set1(int_type_t v) { return _mm256_set1_epi32(v); }
-            static auto set_idx(int idx, int_type_t v, simd_base_t &t) 
-            { 
-                int_type_t *p = reinterpret_cast<int_type_t *>(&t);
-                p[idx] = v;
-            }
             static auto sub(simd_base_t o1, simd_base_t o2) { return _mm256_sub_epi32(o1, o2); }
             static auto add(simd_base_t o1, simd_base_t o2) { return _mm256_add_epi32(o1, o2); }
             static auto max(simd_base_t o1, simd_base_t o2) { return _mm256_max_epi32(o1, o2); }
@@ -192,15 +115,6 @@ namespace fuzzy_sw
             static auto _or(simd_base_t o1, simd_base_t o2) { return _mm256_or_si256(o1, o2); }
             static auto _xor(simd_base_t o1, simd_base_t o2) { return _mm256_xor_si256(o1, o2); }
             static auto load(int_type_t const(&src)[Width]) { return _mm256_lddqu_si256((const simd_base_t*)src); }
-
-            static auto unpack(simd_base_t o)
-            {
-                scores_t s;
-                int_type_t *pB = reinterpret_cast<int_type_t *>(&o);
-                for(int i = 0; i < Width; ++i)
-                    s[i] = pB[i];
-                return s;
-            }
         };
     }
 
@@ -331,8 +245,10 @@ namespace fuzzy_sw
     {
         using vec = simd_t::simd_base_t;
         using input_t = simd_t::input_t;
+        using input_char_src_t = simd_t::input_char_src_t;
 
         static constexpr auto kWidth = simd_t::Width;
+        static constexpr auto kTargetCacheSize = 256;
         Config m_Config;
         ScoreCache<simd_t> m_LUTCache;
         const Delimiters<simd_t, ' ', '_', '.', ':', '-', '=', ','> m_Delimiters;
@@ -341,6 +257,15 @@ namespace fuzzy_sw
         const vec zero = simd_t::set1(0);
         vec extend_gap_penalty_v;
         vec open_extend_gap_penalty_v;
+
+        std::vector<vec> H_prev;
+        std::vector<vec> H_cur;
+        std::vector<vec> E;
+
+        vec m_CachedTargets[kTargetCacheSize];
+        vec m_CachedTargetValidityVecMask[kTargetCacheSize];
+        size_t m_CachedValidityMask[kTargetCacheSize];
+        size_t m_CacheLastOffset = size_t(-1);
 
         bool QueryFits(std::string_view const& q) const
         {
@@ -354,6 +279,9 @@ namespace fuzzy_sw
             delim_bonus = simd_t::set1(cfg.delimiter_boundary_bonus);
             extend_gap_penalty_v = simd_t::set1(cfg.extend_gap_penalty);
             open_extend_gap_penalty_v = simd_t::set1(cfg.open_gap_penalty + cfg.extend_gap_penalty);
+
+            //std::memset(std::begin(m_CachedValidityMask), 0xff, sizeof(m_CachedValidityMask));
+            //std::memset(std::begin(m_CachedTargetValidityVecMask), 0xff, sizeof(m_CachedTargetValidityVecMask));
         }
 
         void pack_chars(simd_t::input_t const& targets, int j, simd_t::simd_base_t &out_orig_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask)
@@ -374,17 +302,64 @@ namespace fuzzy_sw
             }
         }
 
-        simd_t::scores_t sw_score_simd(std::string_view const&query, simd_t::input_t const& targets/*, int dbg_lane*/)
+        void fill_cache_from_sources(simd_t::input_char_src_t const& targets, int offset)
+        {
+            std::memset(std::begin(m_CachedValidityMask), 0, sizeof(m_CachedValidityMask));
+            std::memset(std::begin(m_CachedTargetValidityVecMask), 0, sizeof(m_CachedTargetValidityVecMask));
+
+            char local_buf[kTargetCacheSize];
+            for(int s = 0; s < kWidth; ++s)
+            {
+                auto *pSrc = targets[s];
+                size_t l = pSrc->read(local_buf, offset, kTargetCacheSize);
+                size_t m = 1 << s;
+                for(size_t i = 0; i < l; ++i)
+                {
+                    auto *pInt = (typename simd_t::int_type_t *)(&m_CachedTargets[i]);
+                    pInt[s] = local_buf[i];
+
+                    m_CachedValidityMask[i] |= m;
+                    pInt = (typename simd_t::int_type_t *)(&m_CachedTargetValidityVecMask[i]);
+                    pInt[s] = typename simd_t::int_type_t(-1);
+                }
+            }
+        }
+
+        void pack_chars(simd_t::input_char_src_t const& targets, int j, simd_t::simd_base_t &out_orig_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask)
+        {
+            if (j < m_CacheLastOffset || j >= (m_CacheLastOffset + kTargetCacheSize))
+            {
+                m_CacheLastOffset = j;
+                fill_cache_from_sources(targets, j);
+            }
+
+            size_t off = j - m_CacheLastOffset;
+            out_bitmask = m_CachedValidityMask[off];
+            out_mask = m_CachedTargetValidityVecMask[off];
+            out_orig_case = m_CachedTargets[off];
+        }
+
+        int get_max_length(simd_t::input_char_src_t const& targets) const
+        {
+            int maxTargetLen = 0;
+            for(auto const& sv : targets) if (auto l = sv->length(); l > maxTargetLen) maxTargetLen = l;
+            return maxTargetLen;
+        }
+
+        int get_max_length(simd_t::input_t const& targets) const
         {
             int maxTargetLen = 0;
             for(auto const& sv : targets) if (auto l = sv.length(); l > maxTargetLen) maxTargetLen = l;
+            return maxTargetLen;
+        }
+
+        template<class InType = simd_t::input_t>
+        simd_t::scores_t sw_score_simd(std::string_view const&query, InType const& targets)
+        {
+            int maxTargetLen = get_max_length(targets);
             const int queryLen = query.length();
             const int k_max_penalty_per_char = (m_Config.extend_gap_penalty + m_Config.open_gap_penalty) < m_Config.mismatch_penalty ? m_Config.extend_gap_penalty + m_Config.open_gap_penalty : m_Config.mismatch_penalty;
             const int k_max_penalty = queryLen * k_max_penalty_per_char;
-
-            std::vector<vec> H_prev;
-            std::vector<vec> H_cur;
-            std::vector<vec> E;
 
             const vec max_penalty = simd_t::set1(k_max_penalty);
 
@@ -392,7 +367,9 @@ namespace fuzzy_sw
 
             H_prev.resize(maxTargetLen + 1);
             std::fill(H_prev.begin(), H_prev.end(), zero);
+
             H_cur.resize(maxTargetLen + 1);
+
             E.resize(maxTargetLen + 1);
             std::fill(E.begin(), E.end(), max_penalty);
 
@@ -443,13 +420,13 @@ namespace fuzzy_sw
         ~Impl();
         void StopThreads();
         void SetupThreads(int threadCount);
+        template<class Result, class Input>
         void Do();
         void WorkerFunc(int workerId);
-        template<class SIMD>
+        template<class SIMD, class input_t = typename SIMD::input_t, class Result, class Input>
         void WorkerFuncTpl(int workerId, void *pSIMD);
 
-        //SIMDImpl<simd_prims<int16_t, 8>> m_SSE41x16;
-        //SIMDImpl<simd_prims<int8_t, 16>> m_SSE41x8;
+        SIMDImpl<simd_prims<int32_t,8>> m_AVX2x32;
         SIMDImpl<simd_prims<int16_t,16>> m_AVX2x16;
         SIMDImpl<simd_prims<int8_t, 32>> m_AVX2x8;
 
@@ -458,11 +435,17 @@ namespace fuzzy_sw
         std::counting_semaphore<> m_SemWorkStart{0};
         std::binary_semaphore m_SemMain{0};
         std::vector<std::jthread> m_WorkerThreads;
-        std::vector<Result> m_WorkerResults;
         std::atomic<size_t> m_WorkerChunkOffset{0};//job_idx
         std::atomic<size_t> m_WorkersLeft{0};
-        Input *m_pInputTargets = nullptr;
-        Result *m_pResult = nullptr;
+
+        template<class Result, class Input>
+        struct WorkerTypedContext
+        {
+            std::vector<Result> m_WorkerResults;
+            Input *m_pInputTargets = nullptr;
+            Result *m_pResult = nullptr;
+        };
+        void *m_pWorkerContext = nullptr;
         std::string_view m_Query;
 
         WorkerFuncT m_WorkerFunc = nullptr;
@@ -475,6 +458,7 @@ namespace fuzzy_sw
     {
         m_Impl->m_AVX2x8.Setup(cfg);
         m_Impl->m_AVX2x16.Setup(cfg);
+        m_Impl->m_AVX2x32.Setup(cfg);
     }
 
 
@@ -507,42 +491,130 @@ namespace fuzzy_sw
             Match(impl);
         else if (auto &impl = m_Impl->m_AVX2x16; impl.QueryFits(query))
             Match(impl);
+        else
+            Match(m_Impl->m_AVX2x32);
 
         if (params.sortResults)
             std::ranges::sort(res, std::greater{}, &ResultItem::score);
         return res;
     }
 
-    SIMDParMatcher::Result SIMDParMatcher::match_par(std::string_view const&query, Input &&targets, Param const& params)
+    SIMDParMatcher::CharSourceResult SIMDParMatcher::match(std::string_view const&query, CharSourceInput &&targets, Param const& params)
     {
-        Result res;
-        m_Impl->m_pInputTargets = &targets;
+        CharSourceResult res;
+        std::ranges::sort(targets, std::greater{}, &CharSource::length);
+        auto Match = [&](auto &impl)
+        {
+            using simd_impl_t = std::remove_cvref_t<decltype(impl)>;
+            res.reserve(targets.size());
+            for(size_t i = 0, n = targets.size(); i < n; i += simd_impl_t::kWidth)
+            {
+                typename simd_impl_t::input_char_src_t block;
+                size_t l = (i + simd_impl_t::kWidth) < n ? simd_impl_t::kWidth : (n - i);
+                for(size_t j = 0; j < l; ++j)
+                    block[j] = targets[i + j];
+                auto scores = impl.sw_score_simd(query, block);
+                for(size_t j = 0; j < l; ++j)
+                    if (auto s = scores[i + j]; s > params.scoreThreshold)
+                        res.emplace_back(targets[i + j], s);
+            }
+        };
+
+        if (auto &impl = m_Impl->m_AVX2x8; impl.QueryFits(query))
+            Match(impl);
+        else if (auto &impl = m_Impl->m_AVX2x16; impl.QueryFits(query))
+            Match(impl);
+        else
+            Match(m_Impl->m_AVX2x32);
+
+        if (params.sortResults)
+            std::ranges::sort(res, std::greater{}, &CharSourceResultItem::score);
+        return res;
+    }
+
+    SIMDParMatcher::CharSourceResult SIMDParMatcher::match_par(std::string_view const&query, CharSourceInput &&targets, Param const& params)
+    {
+        CharSourceResult res;
+        Impl::WorkerTypedContext<CharSourceResult,CharSourceInput> ctx;
+        m_Impl->m_pWorkerContext = &ctx;
+        ctx.m_pInputTargets = &targets;
+        ctx.m_pResult = &res;
+
         m_Impl->m_Query = query;
-        m_Impl->m_pResult = &res;
-        std::ranges::sort(targets, std::greater{}, &std::string_view::length);
+        std::ranges::sort(targets, std::greater{}, &CharSource::length);
 
         if (auto &impl = m_Impl->m_AVX2x8; impl.QueryFits(query))
         {
-            m_Impl->m_WorkerFunc = &Impl::WorkerFuncTpl<decltype(Impl::m_AVX2x8)>;
+            using simd_t = decltype(Impl::m_AVX2x8);
+            m_Impl->m_WorkerFunc = &Impl::WorkerFuncTpl<simd_t, simd_t::input_char_src_t, CharSourceResult, CharSourceInput>;
             m_Impl->m_pSIMDTypeErased = &impl;
             m_Impl->m_WorkerWidth = std::remove_cvref_t<decltype(impl)>::kWidth;
         }
         else if (auto &impl = m_Impl->m_AVX2x16; impl.QueryFits(query))
         {
-            m_Impl->m_WorkerFunc = &Impl::WorkerFuncTpl<decltype(Impl::m_AVX2x16)>;
+            using simd_t = decltype(Impl::m_AVX2x16);
+            m_Impl->m_WorkerFunc = &Impl::WorkerFuncTpl<simd_t, simd_t::input_char_src_t, CharSourceResult, CharSourceInput>;
+            m_Impl->m_pSIMDTypeErased = &impl;
+            m_Impl->m_WorkerWidth = std::remove_cvref_t<decltype(impl)>::kWidth;
+        }else
+        {
+            using simd_t = decltype(Impl::m_AVX2x32);
+            m_Impl->m_WorkerFunc = &Impl::WorkerFuncTpl<simd_t, simd_t::input_char_src_t, CharSourceResult, CharSourceInput>;
+            m_Impl->m_pSIMDTypeErased = &m_Impl->m_AVX2x32;
+            m_Impl->m_WorkerWidth = decltype(Impl::m_AVX2x32)::kWidth;
+        }
+
+        m_Impl->Do<CharSourceResult,CharSourceInput>();
+
+        if (params.sortResults)
+            std::ranges::sort(res, std::greater{}, &CharSourceResultItem::score);
+
+        m_Impl->m_WorkerFunc = nullptr;
+        m_Impl->m_pWorkerContext = &ctx;
+        m_Impl->m_pSIMDTypeErased = nullptr;
+        return res;
+    }
+
+    SIMDParMatcher::Result SIMDParMatcher::match_par(std::string_view const&query, Input &&targets, Param const& params)
+    {
+        Result res;
+        Impl::WorkerTypedContext<Result,Input> ctx;
+        m_Impl->m_pWorkerContext = &ctx;
+        ctx.m_pInputTargets = &targets;
+        ctx.m_pResult = &res;
+
+        m_Impl->m_Query = query;
+        std::ranges::sort(targets, std::greater{}, &std::string_view::length);
+
+        if (auto &impl = m_Impl->m_AVX2x8; impl.QueryFits(query))
+        {
+            using simd_t = decltype(Impl::m_AVX2x8);
+            m_Impl->m_WorkerFunc = &Impl::WorkerFuncTpl<simd_t, simd_t::input_t, Result, Input>;
             m_Impl->m_pSIMDTypeErased = &impl;
             m_Impl->m_WorkerWidth = std::remove_cvref_t<decltype(impl)>::kWidth;
         }
+        else if (auto &impl = m_Impl->m_AVX2x16; impl.QueryFits(query))
+        {
+            using simd_t = decltype(Impl::m_AVX2x16);
+            m_Impl->m_WorkerFunc = &Impl::WorkerFuncTpl<simd_t, simd_t::input_t, Result, Input>;
+            m_Impl->m_pSIMDTypeErased = &impl;
+            m_Impl->m_WorkerWidth = std::remove_cvref_t<decltype(impl)>::kWidth;
+        }else
+        {
+            using simd_t = decltype(Impl::m_AVX2x32);
+            m_Impl->m_WorkerFunc = &Impl::WorkerFuncTpl<simd_t, simd_t::input_t, Result, Input>;
+            m_Impl->m_pSIMDTypeErased = &m_Impl->m_AVX2x32;
+            m_Impl->m_WorkerWidth = decltype(Impl::m_AVX2x32)::kWidth;
+        }
 
-        m_Impl->Do();
+        m_Impl->Do<Result,Input>();
 
         if (params.sortResults)
             std::ranges::sort(res, std::greater{}, &ResultItem::score);
 
         m_Impl->m_WorkerFunc = nullptr;
-        m_Impl->m_pInputTargets = nullptr;
+        m_Impl->m_pWorkerContext = &ctx;
         m_Impl->m_pSIMDTypeErased = nullptr;
-        m_Impl->m_pResult = nullptr;
         return res;
     }
 
@@ -576,42 +648,45 @@ namespace fuzzy_sw
     void SIMDParMatcher::Impl::SetupThreads(int threadCount)
     {
         StopThreads();
-        m_WorkerResults.resize(threadCount);
 
         for(int i = 0; i < threadCount; ++i)
             m_WorkerThreads.emplace_back(&Impl::WorkerFunc, this, i);
     }
 
 
+    template<class Result, class Input>
     void SIMDParMatcher::Impl::Do()
     {
+        WorkerTypedContext<Result,Input> &ctx = *static_cast<WorkerTypedContext<Result,Input>*>(m_pWorkerContext);
         size_t nThreads = m_WorkerThreads.size();
+        ctx.m_WorkerResults.resize(nThreads);
         m_WorkersLeft.store(nThreads, std::memory_order_relaxed);
         m_WorkerChunkOffset.store(nThreads * m_WorkerWidth, std::memory_order_relaxed);
-        for(auto &par : m_WorkerResults) par.clear();
+        for(auto &par : ctx.m_WorkerResults) par.clear();
         m_SemWorkStart.release(nThreads);
 
         //now we wait
         m_SemMain.acquire();
 
-        for(auto &par : m_WorkerResults)
-            for(auto &l : par) m_pResult->push_back(l);
+        for(auto &par : ctx.m_WorkerResults)
+            for(auto &l : par) ctx.m_pResult->push_back(l);
     }
 
-    template<class simd_t>
+    template<class simd_t, class input_t, class Result, class Input>
     void SIMDParMatcher::Impl::WorkerFuncTpl(int workerId, void *pSIMD)
     {
         simd_t &simd = *reinterpret_cast<simd_t*>(pSIMD);
-        auto &lines = *m_pInputTargets;
-        auto &results = m_WorkerResults[workerId];
+        WorkerTypedContext<Result,Input> &ctx = *static_cast<WorkerTypedContext<Result,Input>*>(m_pWorkerContext);
+        auto &lines = *ctx.m_pInputTargets;
+        auto &results = ctx.m_WorkerResults[workerId];
         size_t i = workerId * m_WorkerWidth;
-        size_t n = m_pInputTargets->size();
+        size_t n = lines.size();
         while(i < n)
         {
             size_t m = (i + m_WorkerWidth) < n ? i + m_WorkerWidth : n;
             auto *pFrom = &lines[i];
             auto *pTo = &lines[m];
-            typename simd_t::input_t in;
+            input_t in;
             std::copy(pFrom, pTo, in.begin());
             auto scores = simd.sw_score_simd(m_Query, in);
             for(int j = 0, tn = m - i; j < tn; ++j)
