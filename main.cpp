@@ -87,6 +87,53 @@ struct std::formatter<fuzzy_sw::SIMDParMatcher::ResultItem, char>
     }
 };
 
+struct StringViewSrc: fuzzy_sw::CharSource
+{
+    std::string_view sv;
+
+    StringViewSrc() = default;
+    StringViewSrc(std::string_view _sv):sv(_sv){}
+
+    virtual size_t length() const override { return sv.length(); }
+    virtual size_t read(char *pDest, size_t off, size_t n) const override
+    {
+        if (off >= sv.length()) return 0;
+
+        size_t  r = n;
+        if ((off + r) > sv.length())
+            r = sv.length() - off;
+
+        std::copy(sv.begin() + off, sv.begin() + off + r, pDest);
+        return r;
+    }
+};
+
+template<>
+struct std::formatter<fuzzy_sw::CharSource*, char>
+{
+    template<class ParseContext>
+    constexpr ParseContext::iterator parse(ParseContext& ctx) { return ctx.begin(); }
+ 
+    template<class FmtContext>
+    FmtContext::iterator format(fuzzy_sw::CharSource* s, FmtContext& ctx) const
+    {
+        return std::format_to(ctx.out(), "{}", ((StringViewSrc*)s)->sv);
+    }
+};
+
+template<>
+struct std::formatter<fuzzy_sw::SIMDParMatcher::CharSourceResultItem, char>
+{
+    template<class ParseContext>
+    constexpr ParseContext::iterator parse(ParseContext& ctx) { return ctx.begin(); }
+ 
+    template<class FmtContext>
+    FmtContext::iterator format(fuzzy_sw::SIMDParMatcher::CharSourceResultItem const& s, FmtContext& ctx) const
+    {
+        return std::format_to(ctx.out(), "Score: {}; {}", s.score, s.target);
+    }
+};
+
 int main(int argc, char *argv[])
 {
 
@@ -111,15 +158,23 @@ int main(int argc, char *argv[])
                 | std::views::transform([](auto r) { return std::string_view(r.begin(), r.end()); }) 
                 | std::ranges::to<std::vector>();
 
+    auto lines_orig_mut = lines_orig 
+                | std::views::transform([](auto r) { return StringViewSrc{r}; }) 
+                | std::ranges::to<std::vector>();
+
+    auto lines_orig_mut_ptr = lines_orig_mut 
+                | std::views::transform([](auto &r)->fuzzy_sw::CharSource* { return &r; }) 
+                | std::ranges::to<std::vector>();
+
     char query[256];
 
     constexpr size_t kThreads = 16;
-    constexpr size_t kRepeats = 1;//32 * 4;
+    constexpr size_t kRepeats = 32 * 4;
 
-    auto sort_lines = [](fuzzy_sw::SIMDParMatcher::Result &l)
+    auto sort_lines = [](auto/*fuzzy_sw::SIMDParMatcher::Result*/ &l)
     {
         std::ranges::sort(l, 
-                [](fuzzy_sw::SIMDParMatcher::ResultItem const& l1, fuzzy_sw::SIMDParMatcher::ResultItem const& l2){
+                [](auto const& l1, auto const& l2){
                 if (l1.score != l2.score) return l1.score < l2.score;
                 return l1.target < l2.target;
                 }
@@ -127,15 +182,19 @@ int main(int argc, char *argv[])
     };
 
     fuzzy_sw::SIMDParMatcher simdMatcher;
-    fuzzy_sw::SIMDParMatcher::Result lines_with_scores_simd;
-    fuzzy_sw::SIMDParMatcher::Result lines_with_scores_normal;
+    //fuzzy_sw::SIMDParMatcher::Result lines_with_scores_simd;
+    //fuzzy_sw::SIMDParMatcher::Result lines_with_scores_normal;
+    fuzzy_sw::SIMDParMatcher::CharSourceResult lines_with_scores_simd;
+    fuzzy_sw::SIMDParMatcher::CharSourceResult lines_with_scores_normal;
     simdMatcher.SetupThreads(kThreads);
 
     std::print("Enter query: ");
     while(std::cin.getline(query, sizeof(query)))
     {
-        std::println("Results: ");
         std::string_view q(query);
+        if (q == "!stop")
+            break;
+        std::println("Results: ");
         ScopeTimer::duration_t simd_duration, normal_duration;
         {
             {
@@ -143,7 +202,8 @@ int main(int argc, char *argv[])
                 {
                     lines_with_scores_simd.clear();
                     {
-                        auto lines = lines_orig;
+                        auto lines = lines_orig_mut_ptr/*lines_orig*/;
+                        //auto lines = lines_orig;
                         ScopeTimer measure("SIMD SW");
                         lines_with_scores_simd = simdMatcher.match_par(q, std::move(lines), {});
                         auto t = measure.get_duration();
@@ -156,7 +216,8 @@ int main(int argc, char *argv[])
             {
                 auto run_norm = [&]{
                     ScopeTimer measure("Simple SW");
-                    for(const auto &sv : lines_orig)
+                    for(const auto &sv : /*lines_orig*/lines_orig_mut_ptr)
+                    //for(const auto &sv : lines_orig)
                     {
                         if (auto s = fuzzy_sw::match(q, sv); s > 0)
                             lines_with_scores_normal.emplace_back(sv, s);

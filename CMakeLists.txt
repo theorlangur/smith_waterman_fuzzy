@@ -14,6 +14,8 @@ set(HDR fuzzy_sw.hpp)
 add_executable(fuzzy_sw ${SRC} ${HDR})
 # target_compile_options(fuzzy_sw PRIVATE -fsanitize=address)
 # target_link_options(fuzzy_sw PRIVATE  -fsanitize=address)
+# target_compile_options(fuzzy_sw PRIVATE -fsanitize=thread)
+# target_link_options(fuzzy_sw PRIVATE  -fsanitize=thread)
 
 target_compile_options(fuzzy_sw PUBLIC -stdlib=libc++ -msse4.1 -mavx2)
 target_compile_definitions(fuzzy_sw PUBLIC _LIBCPP_ENABLE_EXPERIMENTAL)
