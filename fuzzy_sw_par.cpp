@@ -2,12 +2,51 @@
 
 #include <span>
 #include <thread>
-#include <barrier>
+//#include <barrier>
+#include <condition_variable>
+#include <mutex>
 #include <algorithm>
 #include <immintrin.h>
 
 namespace fuzzy_sw
 {
+    //threading
+    namespace{
+        struct barrier
+        {
+            barrier(size_t gSize = 0): m_Counter(gSize), m_GroupSize(gSize){}
+
+            size_t m_Counter = 0;
+            size_t m_GroupSize = 0;
+            size_t m_Epoch = 0;
+            std::mutex m_Mutex;
+            std::condition_variable m_Cond;
+
+            operator bool() const { return m_GroupSize > 0; }
+
+            void change_group_size(size_t s)
+            {
+                m_Counter = m_GroupSize = s;
+            }
+
+            void arrive_and_wait()
+            {
+                std::unique_lock<std::mutex> g(m_Mutex);
+                if (--m_Counter == 0)
+                {
+                    ++m_Epoch;
+                    m_Counter = m_GroupSize;
+                    m_Cond.notify_all();
+                    g.unlock();
+                }else
+                {
+                    auto epoch = m_Epoch;
+                    m_Cond.wait(g, [&]{ return m_Epoch > epoch;});
+                }
+            }
+        };
+    }
+    //simd
     namespace{
         template<typename IntType, size_t W>
         struct simd_prims;
@@ -460,13 +499,10 @@ namespace fuzzy_sw
 
         int m_WorkerWidth = 0;
         bool m_WorkerCancel = false;
-        std::optional<std::barrier<>> m_Barrier;
-        //std::counting_semaphore<> m_SemWorkStart{0};
-        //std::counting_semaphore<> m_SemWorkEnd{0};
-        //std::binary_semaphore m_SemMain{0};
+        barrier m_Barrier{0};
+        //std::optional<std::barrier<>> m_Barrier;
         std::vector<std::jthread> m_WorkerThreads;
         std::atomic<size_t> m_WorkerChunkOffset{0};//job_idx
-        //std::atomic<size_t> m_WorkersLeft{0};
 
         template<class Result, class Input>
         struct WorkerTypedContext
@@ -674,10 +710,10 @@ namespace fuzzy_sw
         if (m_Barrier)
         {
             m_WorkerCancel = true;
-            m_Barrier->arrive_and_wait();
+            m_Barrier.arrive_and_wait();
             m_WorkerThreads.resize(0);//threads will be joined here
             m_WorkerCancel = false;
-            m_Barrier.reset();
+            m_Barrier.change_group_size(0);
         }
     }
 
@@ -685,7 +721,7 @@ namespace fuzzy_sw
     {
         StopThreads();
 
-        m_Barrier.emplace(threadCount + 1);
+        m_Barrier.change_group_size(threadCount + 1);
         for(int i = 0; i < threadCount; ++i)
             m_WorkerThreads.emplace_back(&Impl::WorkerFunc, this, i);
     }
@@ -703,10 +739,10 @@ namespace fuzzy_sw
             for(auto &par : ctx.m_WorkerResults) par.clear();
 
         //this releases worker threads to work
-        m_Barrier->arrive_and_wait();
+        m_Barrier.arrive_and_wait();
 
         //now we wait
-        m_Barrier->arrive_and_wait();
+        m_Barrier.arrive_and_wait();
 
         for(auto &par : ctx.m_WorkerResults)
             for(auto &l : par) ctx.m_pResult->push_back(l);
@@ -744,12 +780,12 @@ namespace fuzzy_sw
     {
         while(true)
         {
-            m_Barrier->arrive_and_wait();
+            m_Barrier.arrive_and_wait();
             if (m_WorkerCancel)
                 break;
             //...useful work
             (this->*m_WorkerFunc)(workerId, m_pSIMDTypeErased);
-            m_Barrier->arrive_and_wait();
+            m_Barrier.arrive_and_wait();
         }
     }
 }
