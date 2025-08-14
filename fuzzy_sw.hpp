@@ -17,8 +17,15 @@ namespace fuzzy_sw
         int icase_match_bonus = 2;
     };
 
+    struct CharSource
+    {
+        virtual size_t length() const = 0;
+        virtual size_t read(char *pDest, size_t off, size_t n) const = 0;
+    };
+
     //non-parallel, simple version, no backtracking
     int match(std::string_view const& query, std::string_view const& target, Config const& cfg = {});
+    int match(std::string_view const& query, CharSource *target, Config const& cfg = {});
 
     class SIMDParMatcher
     {
@@ -37,11 +44,6 @@ namespace fuzzy_sw
         };
         using Result = std::vector<ResultItem>;
 
-        struct CharSource
-        {
-            virtual size_t length() const = 0;
-            virtual size_t read(char *pDest, size_t off, size_t n) const;
-        };
         using CharSourceInput = std::vector<CharSource*>;
         struct CharSourceResultItem
         {

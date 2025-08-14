@@ -1,9 +1,8 @@
 #include "fuzzy_sw.hpp"
 
-#include <ranges>
+#include <span>
 #include <thread>
 #include <barrier>
-#include <semaphore>
 #include <algorithm>
 #include <immintrin.h>
 
@@ -21,7 +20,9 @@ namespace fuzzy_sw
             using simd_base_t = simd_t;
 
             using input_t = std::array<std::string_view, W>;
-            using input_char_src_t = std::array<SIMDParMatcher::CharSource*, W>;
+            using input_span_t = std::span<std::string_view>;
+            using input_char_src_t = std::array<CharSource*, W>;
+            using input_char_src_span_t = std::span<CharSource*>;
             using scores_t = std::array<IntType, W>;
             using lut_data_t = int8_t;
             static constexpr IntType kMaskVal = IntType(-1);
@@ -246,6 +247,14 @@ namespace fuzzy_sw
         using vec = simd_t::simd_base_t;
         using input_t = simd_t::input_t;
         using input_char_src_t = simd_t::input_char_src_t;
+        using input_span_t = simd_t::input_span_t;
+        using input_char_src_span_t = simd_t::input_char_src_span_t;
+
+        template<class In>
+        struct span_for;
+
+        template<> struct span_for<input_t> { using type = input_span_t; };
+        template<> struct span_for<input_char_src_t> { using type = input_char_src_span_t; };
 
         static constexpr auto kWidth = simd_t::Width;
         static constexpr auto kTargetCacheSize = 256;
@@ -254,18 +263,31 @@ namespace fuzzy_sw
         const Delimiters<simd_t, ' ', '_', '.', ':', '-', '=', ','> m_Delimiters;
 
         vec delim_bonus;
-        const vec zero = simd_t::set1(0);
         vec extend_gap_penalty_v;
         vec open_extend_gap_penalty_v;
 
-        std::vector<vec> H_prev;
-        std::vector<vec> H_cur;
-        std::vector<vec> E;
+        struct Context
+        {
+            SIMDImpl &impl;
+            std::vector<vec> H_prev;
+            std::vector<vec> H_cur;
+            std::vector<vec> E;
+            vec m_CachedTargets[kTargetCacheSize];
+            vec m_CachedTargetValidityVecMask[kTargetCacheSize];
+            size_t m_CachedValidityMask[kTargetCacheSize];
+            size_t m_CacheLastOffset = size_t(-1);
 
-        vec m_CachedTargets[kTargetCacheSize];
-        vec m_CachedTargetValidityVecMask[kTargetCacheSize];
-        size_t m_CachedValidityMask[kTargetCacheSize];
-        size_t m_CacheLastOffset = size_t(-1);
+            void fill_cache_from_sources(simd_t::input_char_src_span_t const& targets, int offset);
+
+            void pack_chars(simd_t::input_span_t const& targets, int j, simd_t::simd_base_t &out_orig_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask);
+            void pack_chars(simd_t::input_char_src_span_t const& targets, int j, simd_t::simd_base_t &out_orig_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask);
+
+            int get_max_length(simd_t::input_char_src_span_t const& targets) const;
+            int get_max_length(simd_t::input_span_t const& targets) const;
+
+            template<class InType = simd_t::input_span_t>
+            simd_t::scores_t sw_score_simd(std::string_view const&query, InType const& targets);
+        };
 
         bool QueryFits(std::string_view const& q) const
         {
@@ -279,139 +301,145 @@ namespace fuzzy_sw
             delim_bonus = simd_t::set1(cfg.delimiter_boundary_bonus);
             extend_gap_penalty_v = simd_t::set1(cfg.extend_gap_penalty);
             open_extend_gap_penalty_v = simd_t::set1(cfg.open_gap_penalty + cfg.extend_gap_penalty);
-
-            //std::memset(std::begin(m_CachedValidityMask), 0xff, sizeof(m_CachedValidityMask));
-            //std::memset(std::begin(m_CachedTargetValidityVecMask), 0xff, sizeof(m_CachedTargetValidityVecMask));
-        }
-
-        void pack_chars(simd_t::input_t const& targets, int j, simd_t::simd_base_t &out_orig_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask)
-        {
-            for(int i = 0, n = targets.size(); i < n; ++i)
-            {
-                if (!(out_bitmask & size_t(1) << i))
-                    continue;
-
-                auto const& t = targets[i];
-                if (j < t.length())
-                    simd_t::set_idx(i, t[j], out_orig_case);
-                else
-                {
-                    out_bitmask &= ~(size_t(1) << i);
-                    simd_t::set_idx(i, 0, out_mask);
-                }
-            }
-        }
-
-        void fill_cache_from_sources(simd_t::input_char_src_t const& targets, int offset)
-        {
-            std::memset(std::begin(m_CachedValidityMask), 0, sizeof(m_CachedValidityMask));
-            std::memset(std::begin(m_CachedTargetValidityVecMask), 0, sizeof(m_CachedTargetValidityVecMask));
-
-            char local_buf[kTargetCacheSize];
-            for(int s = 0; s < kWidth; ++s)
-            {
-                auto *pSrc = targets[s];
-                size_t l = pSrc->read(local_buf, offset, kTargetCacheSize);
-                size_t m = 1 << s;
-                for(size_t i = 0; i < l; ++i)
-                {
-                    auto *pInt = (typename simd_t::int_type_t *)(&m_CachedTargets[i]);
-                    pInt[s] = local_buf[i];
-
-                    m_CachedValidityMask[i] |= m;
-                    pInt = (typename simd_t::int_type_t *)(&m_CachedTargetValidityVecMask[i]);
-                    pInt[s] = typename simd_t::int_type_t(-1);
-                }
-            }
-        }
-
-        void pack_chars(simd_t::input_char_src_t const& targets, int j, simd_t::simd_base_t &out_orig_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask)
-        {
-            if (j < m_CacheLastOffset || j >= (m_CacheLastOffset + kTargetCacheSize))
-            {
-                m_CacheLastOffset = j;
-                fill_cache_from_sources(targets, j);
-            }
-
-            size_t off = j - m_CacheLastOffset;
-            out_bitmask = m_CachedValidityMask[off];
-            out_mask = m_CachedTargetValidityVecMask[off];
-            out_orig_case = m_CachedTargets[off];
-        }
-
-        int get_max_length(simd_t::input_char_src_t const& targets) const
-        {
-            int maxTargetLen = 0;
-            for(auto const& sv : targets) if (auto l = sv->length(); l > maxTargetLen) maxTargetLen = l;
-            return maxTargetLen;
-        }
-
-        int get_max_length(simd_t::input_t const& targets) const
-        {
-            int maxTargetLen = 0;
-            for(auto const& sv : targets) if (auto l = sv.length(); l > maxTargetLen) maxTargetLen = l;
-            return maxTargetLen;
-        }
-
-        template<class InType = simd_t::input_t>
-        simd_t::scores_t sw_score_simd(std::string_view const&query, InType const& targets)
-        {
-            int maxTargetLen = get_max_length(targets);
-            const int queryLen = query.length();
-            const int k_max_penalty_per_char = (m_Config.extend_gap_penalty + m_Config.open_gap_penalty) < m_Config.mismatch_penalty ? m_Config.extend_gap_penalty + m_Config.open_gap_penalty : m_Config.mismatch_penalty;
-            const int k_max_penalty = queryLen * k_max_penalty_per_char;
-
-            const vec max_penalty = simd_t::set1(k_max_penalty);
-
-            vec best = simd_t::set1(0);
-
-            H_prev.resize(maxTargetLen + 1);
-            std::fill(H_prev.begin(), H_prev.end(), zero);
-
-            H_cur.resize(maxTargetLen + 1);
-
-            E.resize(maxTargetLen + 1);
-            std::fill(E.begin(), E.end(), max_penalty);
-
-            for(int i = 1; i <= queryLen; ++i)
-            {
-                H_cur[0] = zero;
-                vec F = zero;
-                char qc = query[i - 1];
-
-                vec prev_is_delim = zero;
-                vec valid_targets_mask = simd_t::set1(simd_t::kMaskVal);
-                size_t valid_targets_bitmask = size_t(-1);
-                for(int j = 1; j <= maxTargetLen; ++j)
-                {
-                    vec target_chars_lower;
-                    vec target_chars_orig;
-                    pack_chars(targets, j - 1, target_chars_orig, valid_targets_mask, valid_targets_bitmask);
-                    vec is_delim = m_Delimiters.MatchDelimiters(target_chars_orig);
-                    E[j] = simd_t::max(simd_t::add(E[j], extend_gap_penalty_v), simd_t::add(H_cur[j - 1], open_extend_gap_penalty_v));
-                    F = simd_t::max(simd_t::add(F, extend_gap_penalty_v), simd_t::add(H_prev[j], open_extend_gap_penalty_v));
-
-                    vec match_score;
-                    m_LUTCache.Gather(qc, target_chars_orig, match_score);
-                    vec mismatches = simd_t::eq(match_score, simd_t::set1(-1));
-                    vec delim_bonus_mask = simd_t::blend(simd_t::_xor(is_delim, prev_is_delim), simd_t::set1(0), mismatches);
-                    vec delim_bonus_val = simd_t::blend(simd_t::set1(0), delim_bonus, delim_bonus_mask);
-                    match_score = simd_t::add(delim_bonus_val, match_score);
-
-                    auto diag = simd_t::add(H_prev[j - 1], match_score);
-                    auto H = simd_t::max(simd_t::max(zero, diag), simd_t::max(E[j], F));
-                    H = simd_t::blend(zero, H, valid_targets_mask);
-                    H_cur[j] = H;
-
-                    best = simd_t::max(H, best);
-                    prev_is_delim = is_delim;
-                }
-                std::swap(H_prev, H_cur);
-            }
-
-            return simd_t::unpack(best);
         }
     };
+
+    template<class simd_t>
+    void SIMDImpl<simd_t>::Context::pack_chars(simd_t::input_span_t const& targets, int j, simd_t::simd_base_t &out_orig_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask)
+    {
+        for(int i = 0, n = targets.size(); i < n; ++i)
+        {
+            if (!(out_bitmask & size_t(1) << i))
+                continue;
+
+            auto const& t = targets[i];
+            if (j < t.length())
+                simd_t::set_idx(i, t[j], out_orig_case);
+            else
+            {
+                out_bitmask &= ~(size_t(1) << i);
+                simd_t::set_idx(i, 0, out_mask);
+            }
+        }
+    }
+
+    template<class simd_t>
+    void SIMDImpl<simd_t>::Context::fill_cache_from_sources(simd_t::input_char_src_span_t const& targets, int offset)
+    {
+        std::memset(std::begin(m_CachedValidityMask), 0, sizeof(m_CachedValidityMask));
+        std::memset(std::begin(m_CachedTargetValidityVecMask), 0, sizeof(m_CachedTargetValidityVecMask));
+
+        char local_buf[kTargetCacheSize];
+        for(int s = 0, n = (int)targets.size(); s < n; ++s)
+        {
+            auto *pSrc = targets[s];
+            size_t l = pSrc->read(local_buf, offset, kTargetCacheSize);
+            size_t m = size_t(1) << s;
+            for(size_t i = 0; i < l; ++i)
+            {
+                auto *pInt = (typename simd_t::int_type_t *)(&m_CachedTargets[i]);
+                pInt[s] = local_buf[i];
+
+                m_CachedValidityMask[i] |= m;
+                pInt = (typename simd_t::int_type_t *)(&m_CachedTargetValidityVecMask[i]);
+                pInt[s] = typename simd_t::int_type_t(-1);
+            }
+        }
+    }
+
+    template<class simd_t>
+    void SIMDImpl<simd_t>::Context::pack_chars(simd_t::input_char_src_span_t const& targets, int j, simd_t::simd_base_t &out_orig_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask)
+    {
+        //multithreading problem here:
+        if (j < m_CacheLastOffset || j >= (m_CacheLastOffset + kTargetCacheSize))
+        {
+            m_CacheLastOffset = j;
+            fill_cache_from_sources(targets, j);
+        }
+
+        size_t off = j - m_CacheLastOffset;
+        out_bitmask = m_CachedValidityMask[off];
+        out_mask = m_CachedTargetValidityVecMask[off];
+        out_orig_case = m_CachedTargets[off];
+    }
+
+    template<class simd_t>
+    int SIMDImpl<simd_t>::Context::get_max_length(simd_t::input_char_src_span_t const& targets) const
+    {
+        int maxTargetLen = 0;
+        for(auto const& sv : targets) if (auto l = sv->length(); l > maxTargetLen) maxTargetLen = l;
+        return maxTargetLen;
+    }
+
+    template<class simd_t>
+    int SIMDImpl<simd_t>::Context::get_max_length(simd_t::input_span_t const& targets) const
+    {
+        int maxTargetLen = 0;
+        for(auto const& sv : targets) if (auto l = sv.length(); l > maxTargetLen) maxTargetLen = l;
+        return maxTargetLen;
+    }
+
+    template<class simd_t>
+    template<class InType>
+    simd_t::scores_t SIMDImpl<simd_t>::Context::sw_score_simd(std::string_view const&query, InType const& targets)
+    {
+        m_CacheLastOffset = size_t(-1);
+        int maxTargetLen = get_max_length(targets);
+        const int queryLen = query.length();
+        const int k_max_penalty_per_char = (impl.m_Config.extend_gap_penalty + impl.m_Config.open_gap_penalty) < impl.m_Config.mismatch_penalty ? impl.m_Config.extend_gap_penalty + impl.m_Config.open_gap_penalty : impl.m_Config.mismatch_penalty;
+        const int k_max_penalty = queryLen * k_max_penalty_per_char;
+
+        const vec max_penalty = simd_t::set1(k_max_penalty);
+        const vec zero = simd_t::set1(0);
+        
+        vec best = simd_t::set1(0);
+
+        H_prev.resize(maxTargetLen + 1);
+        std::fill(H_prev.begin(), H_prev.end(), zero);
+
+        H_cur.resize(maxTargetLen + 1);
+
+        E.resize(maxTargetLen + 1);
+        std::fill(E.begin(), E.end(), max_penalty);
+
+        for(int i = 1; i <= queryLen; ++i)
+        {
+            H_cur[0] = zero;
+            vec F = zero;
+            char qc = query[i - 1];
+
+            vec prev_is_delim = zero;
+            vec valid_targets_mask = simd_t::set1(simd_t::kMaskVal);
+            size_t valid_targets_bitmask = size_t(-1);
+            for(int j = 1; j <= maxTargetLen; ++j)
+            {
+                vec target_chars_lower;
+                vec target_chars_orig;
+                pack_chars(targets, j - 1, target_chars_orig, valid_targets_mask, valid_targets_bitmask);
+                vec is_delim = impl.m_Delimiters.MatchDelimiters(target_chars_orig);
+                E[j] = simd_t::max(simd_t::add(E[j], impl.extend_gap_penalty_v), simd_t::add(H_cur[j - 1], impl.open_extend_gap_penalty_v));
+                F = simd_t::max(simd_t::add(F, impl.extend_gap_penalty_v), simd_t::add(H_prev[j], impl.open_extend_gap_penalty_v));
+
+                vec match_score;
+                impl.m_LUTCache.Gather(qc, target_chars_orig, match_score);
+                vec mismatches = simd_t::eq(match_score, simd_t::set1(-1));
+                vec delim_bonus_mask = simd_t::blend(simd_t::_xor(is_delim, prev_is_delim), simd_t::set1(0), mismatches);
+                vec delim_bonus_val = simd_t::blend(simd_t::set1(0), impl.delim_bonus, delim_bonus_mask);
+                match_score = simd_t::add(delim_bonus_val, match_score);
+
+                auto diag = simd_t::add(H_prev[j - 1], match_score);
+                auto H = simd_t::max(simd_t::max(zero, diag), simd_t::max(E[j], F));
+                H = simd_t::blend(zero, H, valid_targets_mask);
+                H_cur[j] = H;
+
+                best = simd_t::max(H, best);
+                prev_is_delim = is_delim;
+            }
+            std::swap(H_prev, H_cur);
+        }
+
+        return simd_t::unpack(best);
+    }
 
     struct SIMDParMatcher::Impl
     {
@@ -432,11 +460,13 @@ namespace fuzzy_sw
 
         int m_WorkerWidth = 0;
         bool m_WorkerCancel = false;
-        std::counting_semaphore<> m_SemWorkStart{0};
-        std::binary_semaphore m_SemMain{0};
+        std::optional<std::barrier<>> m_Barrier;
+        //std::counting_semaphore<> m_SemWorkStart{0};
+        //std::counting_semaphore<> m_SemWorkEnd{0};
+        //std::binary_semaphore m_SemMain{0};
         std::vector<std::jthread> m_WorkerThreads;
         std::atomic<size_t> m_WorkerChunkOffset{0};//job_idx
-        std::atomic<size_t> m_WorkersLeft{0};
+        //std::atomic<size_t> m_WorkersLeft{0};
 
         template<class Result, class Input>
         struct WorkerTypedContext
@@ -473,6 +503,7 @@ namespace fuzzy_sw
         auto Match = [&](auto &impl)
         {
             using simd_impl_t = std::remove_cvref_t<decltype(impl)>;
+            typename simd_impl_t::Context ctx{impl};
             res.reserve(targets.size());
             for(size_t i = 0, n = targets.size(); i < n; i += simd_impl_t::kWidth)
             {
@@ -480,7 +511,7 @@ namespace fuzzy_sw
                 size_t l = (i + simd_impl_t::kWidth) < n ? simd_impl_t::kWidth : (n - i);
                 for(size_t j = 0; j < l; ++j)
                     block[j] = targets[i + j];
-                auto scores = impl.sw_score_simd(query, block);
+                auto scores = ctx.sw_score_simd(query, typename simd_impl_t::input_span_t(block.begin(), block.begin() + l));
                 for(size_t j = 0; j < l; ++j)
                     if (auto s = scores[i + j]; s > params.scoreThreshold)
                         res.emplace_back(targets[i + j], s);
@@ -506,6 +537,7 @@ namespace fuzzy_sw
         auto Match = [&](auto &impl)
         {
             using simd_impl_t = std::remove_cvref_t<decltype(impl)>;
+            typename simd_impl_t::Context ctx{impl};
             res.reserve(targets.size());
             for(size_t i = 0, n = targets.size(); i < n; i += simd_impl_t::kWidth)
             {
@@ -513,7 +545,7 @@ namespace fuzzy_sw
                 size_t l = (i + simd_impl_t::kWidth) < n ? simd_impl_t::kWidth : (n - i);
                 for(size_t j = 0; j < l; ++j)
                     block[j] = targets[i + j];
-                auto scores = impl.sw_score_simd(query, block);
+                auto scores = ctx.sw_score_simd(query, typename simd_impl_t::input_char_src_span_t(block.begin(), block.begin() + l));
                 for(size_t j = 0; j < l; ++j)
                     if (auto s = scores[i + j]; s > params.scoreThreshold)
                         res.emplace_back(targets[i + j], s);
@@ -639,16 +671,21 @@ namespace fuzzy_sw
 
     void SIMDParMatcher::Impl::StopThreads()
     {
-        m_WorkerCancel = true;
-        m_SemWorkStart.release(m_WorkerThreads.size());
-        m_WorkerThreads.resize(0);//threads will be joined here
-        m_WorkerCancel = false;
+        if (m_Barrier)
+        {
+            m_WorkerCancel = true;
+            m_Barrier->arrive_and_wait();
+            m_WorkerThreads.resize(0);//threads will be joined here
+            m_WorkerCancel = false;
+            m_Barrier.reset();
+        }
     }
 
     void SIMDParMatcher::Impl::SetupThreads(int threadCount)
     {
         StopThreads();
 
+        m_Barrier.emplace(threadCount + 1);
         for(int i = 0; i < threadCount; ++i)
             m_WorkerThreads.emplace_back(&Impl::WorkerFunc, this, i);
     }
@@ -659,14 +696,17 @@ namespace fuzzy_sw
     {
         WorkerTypedContext<Result,Input> &ctx = *static_cast<WorkerTypedContext<Result,Input>*>(m_pWorkerContext);
         size_t nThreads = m_WorkerThreads.size();
+        bool workerResultsWereEmpty = ctx.m_WorkerResults.empty();
         ctx.m_WorkerResults.resize(nThreads);
-        m_WorkersLeft.store(nThreads, std::memory_order_relaxed);
         m_WorkerChunkOffset.store(nThreads * m_WorkerWidth, std::memory_order_relaxed);
-        for(auto &par : ctx.m_WorkerResults) par.clear();
-        m_SemWorkStart.release(nThreads);
+        if (!workerResultsWereEmpty)
+            for(auto &par : ctx.m_WorkerResults) par.clear();
+
+        //this releases worker threads to work
+        m_Barrier->arrive_and_wait();
 
         //now we wait
-        m_SemMain.acquire();
+        m_Barrier->arrive_and_wait();
 
         for(auto &par : ctx.m_WorkerResults)
             for(auto &l : par) ctx.m_pResult->push_back(l);
@@ -676,6 +716,7 @@ namespace fuzzy_sw
     void SIMDParMatcher::Impl::WorkerFuncTpl(int workerId, void *pSIMD)
     {
         simd_t &simd = *reinterpret_cast<simd_t*>(pSIMD);
+        typename simd_t::Context ctx_simd{simd};
         WorkerTypedContext<Result,Input> &ctx = *static_cast<WorkerTypedContext<Result,Input>*>(m_pWorkerContext);
         auto &lines = *ctx.m_pInputTargets;
         auto &results = ctx.m_WorkerResults[workerId];
@@ -686,9 +727,10 @@ namespace fuzzy_sw
             size_t m = (i + m_WorkerWidth) < n ? i + m_WorkerWidth : n;
             auto *pFrom = &lines[i];
             auto *pTo = &lines[m];
-            input_t in;
+            input_t in{};
             std::copy(pFrom, pTo, in.begin());
-            auto scores = simd.sw_score_simd(m_Query, in);
+            auto sp = typename simd_t::template span_for<input_t>::type{in.begin(), in.begin() + (m - i)};
+            auto scores = ctx_simd.sw_score_simd(m_Query, sp);
             for(int j = 0, tn = m - i; j < tn; ++j)
             {
                 if (scores[j])
@@ -702,16 +744,12 @@ namespace fuzzy_sw
     {
         while(true)
         {
-            m_SemWorkStart.acquire();
+            m_Barrier->arrive_and_wait();
             if (m_WorkerCancel)
                 break;
             //...useful work
             (this->*m_WorkerFunc)(workerId, m_pSIMDTypeErased);
-            if (m_WorkersLeft.fetch_sub(1, std::memory_order_relaxed) == 1)
-            {
-                //this was the last worker to finish, it sets the main semaphore
-                m_SemMain.release();
-            }
+            m_Barrier->arrive_and_wait();
         }
     }
 }
