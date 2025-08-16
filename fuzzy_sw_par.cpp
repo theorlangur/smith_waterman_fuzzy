@@ -510,6 +510,7 @@ namespace fuzzy_sw
             std::vector<Result> m_WorkerResults;
             Input *m_pInputTargets = nullptr;
             Result *m_pResult = nullptr;
+            int m_ScoreThreshold = 0;
         };
         void *m_pWorkerContext = nullptr;
         std::string_view m_Query;
@@ -607,6 +608,7 @@ namespace fuzzy_sw
         m_Impl->m_pWorkerContext = &ctx;
         ctx.m_pInputTargets = &targets;
         ctx.m_pResult = &res;
+        ctx.m_ScoreThreshold = params.scoreThreshold;
 
         m_Impl->m_Query = query;
         std::ranges::sort(targets, std::greater{}, &CharSource::length);
@@ -650,6 +652,7 @@ namespace fuzzy_sw
         m_Impl->m_pWorkerContext = &ctx;
         ctx.m_pInputTargets = &targets;
         ctx.m_pResult = &res;
+        ctx.m_ScoreThreshold = params.scoreThreshold;
 
         m_Impl->m_Query = query;
         std::ranges::sort(targets, std::greater{}, &std::string_view::length);
@@ -758,18 +761,19 @@ namespace fuzzy_sw
         auto &results = ctx.m_WorkerResults[workerId];
         size_t i = workerId * m_WorkerWidth;
         size_t n = lines.size();
+        auto beg = lines.begin();
         while(i < n)
         {
             size_t m = (i + m_WorkerWidth) < n ? i + m_WorkerWidth : n;
             auto *pFrom = &lines[i];
-            auto *pTo = &lines[m];
+            auto *pTo = &*beg + m;
             input_t in{};
             std::copy(pFrom, pTo, in.begin());
             auto sp = typename simd_t::template span_for<input_t>::type{in.begin(), in.begin() + (m - i)};
             auto scores = ctx_simd.sw_score_simd(m_Query, sp);
             for(int j = 0, tn = m - i; j < tn; ++j)
             {
-                if (scores[j])
+                if (scores[j] > ctx.m_ScoreThreshold)
                     results.emplace_back(lines[i + j], scores[j]);
             }
             i = m_WorkerChunkOffset.fetch_add(m_WorkerWidth, std::memory_order_relaxed);
