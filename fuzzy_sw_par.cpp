@@ -76,7 +76,7 @@ namespace fuzzy_sw
             {
                 scores_t s;
                 int_type_t *pB = reinterpret_cast<int_type_t *>(&o);
-                for(int i = 0; i < Width; ++i)
+                for(size_t i = 0; i < Width; ++i)
                     s[i] = pB[i];
                 return s;
             }
@@ -222,8 +222,8 @@ namespace fuzzy_sw
         {
             typename simd_t::int_type_t *pB = reinterpret_cast<simd_t::int_type_t *>(&tgt);
             typename simd_t::int_type_t *pS = reinterpret_cast<simd_t::int_type_t *>(&out_scores);
-            for(int i = 0; i < simd_t::Width; ++i)
-                pS[i] = data[q][pB[i]];
+            for(size_t i = 0; i < simd_t::Width; ++i)
+                pS[i] = data[int(q)][pB[i]];
         }
     };
 
@@ -238,7 +238,7 @@ namespace fuzzy_sw
         {
             auto fill_d = [](simd_t::int_type_t (&dest)[simd_t::Width], char c)
             {
-                for(int i = 0; i < simd_t::Width; ++i) dest[i] = c;
+                for(size_t i = 0; i < simd_t::Width; ++i) dest[i] = c;
             };
             [&]<size_t... I>(std::index_sequence<I...> s){
                 (fill_d(dMasks[I], d),...);
@@ -271,7 +271,7 @@ namespace fuzzy_sw
             using ResT = Delimiters<simd_t, d...>;
             auto fill_d = [](simd_t::int_type_t (&dest)[simd_t::Width], char c)
             {
-                for(int i = 0; i < simd_t::Width; ++i) dest[i] = c;
+                for(size_t i = 0; i < simd_t::Width; ++i) dest[i] = c;
             };
             [&]<size_t... I>(std::index_sequence<I...> s){
                 (fill_d(dMasks[I], d),...);
@@ -321,8 +321,8 @@ namespace fuzzy_sw
             void pack_chars(simd_t::input_span_t const& targets, int j, simd_t::simd_base_t &out_orig_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask);
             void pack_chars(simd_t::input_char_src_span_t const& targets, int j, simd_t::simd_base_t &out_orig_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask);
 
-            int get_max_length(simd_t::input_char_src_span_t const& targets) const;
-            int get_max_length(simd_t::input_span_t const& targets) const;
+            size_t get_max_length(simd_t::input_char_src_span_t const& targets) const;
+            size_t get_max_length(simd_t::input_span_t const& targets) const;
 
             template<class InType = simd_t::input_span_t>
             simd_t::scores_t sw_score_simd(std::string_view const&query, InType const& targets);
@@ -346,13 +346,13 @@ namespace fuzzy_sw
     template<class simd_t>
     void SIMDImpl<simd_t>::Context::pack_chars(simd_t::input_span_t const& targets, int j, simd_t::simd_base_t &out_orig_case, simd_t::simd_base_t &out_mask, size_t &out_bitmask)
     {
-        for(int i = 0, n = targets.size(); i < n; ++i)
+        for(size_t i = 0, n = targets.size(); i < n; ++i)
         {
             if (!(out_bitmask & size_t(1) << i))
                 continue;
 
             auto const& t = targets[i];
-            if (j < t.length())
+            if (size_t(j) < t.length())
                 simd_t::set_idx(i, t[j], out_orig_case);
             else
             {
@@ -369,7 +369,7 @@ namespace fuzzy_sw
         std::memset(std::begin(m_CachedTargetValidityVecMask), 0, sizeof(m_CachedTargetValidityVecMask));
 
         char local_buf[kTargetCacheSize];
-        for(int s = 0, n = (int)targets.size(); s < n; ++s)
+        for(size_t s = 0, n = (int)targets.size(); s < n; ++s)
         {
             auto *pSrc = targets[s];
             size_t l = pSrc->read(local_buf, offset, kTargetCacheSize);
@@ -403,17 +403,17 @@ namespace fuzzy_sw
     }
 
     template<class simd_t>
-    int SIMDImpl<simd_t>::Context::get_max_length(simd_t::input_char_src_span_t const& targets) const
+    size_t SIMDImpl<simd_t>::Context::get_max_length(simd_t::input_char_src_span_t const& targets) const
     {
-        int maxTargetLen = 0;
+        size_t maxTargetLen = 0;
         for(auto const& sv : targets) if (auto l = sv->length(); l > maxTargetLen) maxTargetLen = l;
         return maxTargetLen;
     }
 
     template<class simd_t>
-    int SIMDImpl<simd_t>::Context::get_max_length(simd_t::input_span_t const& targets) const
+    size_t SIMDImpl<simd_t>::Context::get_max_length(simd_t::input_span_t const& targets) const
     {
-        int maxTargetLen = 0;
+        size_t maxTargetLen = 0;
         for(auto const& sv : targets) if (auto l = sv.length(); l > maxTargetLen) maxTargetLen = l;
         return maxTargetLen;
     }
@@ -423,10 +423,10 @@ namespace fuzzy_sw
     simd_t::scores_t SIMDImpl<simd_t>::Context::sw_score_simd(std::string_view const&query, InType const& targets)
     {
         m_CacheLastOffset = size_t(-1);
-        int maxTargetLen = get_max_length(targets);
-        const int queryLen = query.length();
+        size_t maxTargetLen = get_max_length(targets);
+        const size_t queryLen = query.length();
         const int k_max_penalty_per_char = (impl.m_Config.extend_gap_penalty + impl.m_Config.open_gap_penalty) < impl.m_Config.mismatch_penalty ? impl.m_Config.extend_gap_penalty + impl.m_Config.open_gap_penalty : impl.m_Config.mismatch_penalty;
-        const int k_max_penalty = queryLen * k_max_penalty_per_char;
+        const int k_max_penalty = int(queryLen) * k_max_penalty_per_char;
 
         const vec max_penalty = simd_t::set1(k_max_penalty);
         const vec zero = simd_t::set1(0);
