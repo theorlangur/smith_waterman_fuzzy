@@ -296,7 +296,7 @@ namespace fuzzy_sw
         template<> struct span_for<input_char_src_t> { using type = input_char_src_span_t; };
 
         static constexpr auto kWidth = simd_t::Width;
-        static constexpr auto kTargetCacheSize = 128;
+        static constexpr auto kTargetCacheSize = 64;
         Config m_Config;
         ScoreCache<simd_t> m_LUTCache;
         const Delimiters<simd_t, ' ', '_', '.', ':', '-', '=', ','> m_Delimiters;
