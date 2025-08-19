@@ -101,7 +101,7 @@ namespace fuzzy_sw
                 F = std::max(F + cfg.extend_gap_penalty, H_prev[j] + open_and_extend_penalty);
                 auto t_prev_delim = false;
                 auto t_delim = false;
-                if (i == 1 || i == n)
+                if ((i == 1) && prev_delim && !delim)
                 {
                     t_prev_delim = prev_delim;
                     t_delim = delim;
