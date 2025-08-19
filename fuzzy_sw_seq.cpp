@@ -40,7 +40,14 @@ namespace fuzzy_sw
                 bool delim = is_delim(target[j - 1]);
                 E[j] = std::max(E[j] + cfg.extend_gap_penalty, H_cur[j - 1] + open_and_extend_penalty);
                 F = std::max(F + cfg.extend_gap_penalty, H_prev[j] + open_and_extend_penalty);
-                int diag = H_prev[j - 1] + match(query[i - 1], target[j - 1], prev_delim, delim);
+                auto t_prev_delim = false;
+                auto t_delim = false;
+                if (i == 1 || i == n)
+                {
+                    t_prev_delim = prev_delim;
+                    t_delim = delim;
+                }
+                int diag = H_prev[j - 1] + match(query[i - 1], target[j - 1], t_prev_delim, t_delim);
                 int H = std::max({0, diag, E[j], F});
                 H_cur[j] = H;
                 if (H > best) best = H;
@@ -92,7 +99,14 @@ namespace fuzzy_sw
                 bool delim = is_delim(tc);
                 E[j] = std::max(E[j] + cfg.extend_gap_penalty, H_cur[j - 1] + open_and_extend_penalty);
                 F = std::max(F + cfg.extend_gap_penalty, H_prev[j] + open_and_extend_penalty);
-                int diag = H_prev[j - 1] + match(query[i - 1], tc, prev_delim, delim);
+                auto t_prev_delim = false;
+                auto t_delim = false;
+                if (i == 1 || i == n)
+                {
+                    t_prev_delim = prev_delim;
+                    t_delim = delim;
+                }
+                int diag = H_prev[j - 1] + match(query[i - 1], tc, t_prev_delim, t_delim);
                 int H = std::max({0, diag, E[j], F});
                 H_cur[j] = H;
                 if (H > best) best = H;
